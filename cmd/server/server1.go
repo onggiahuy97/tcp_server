@@ -1,4 +1,4 @@
-package main
+package abc
 
 import (
 	"bufio"
@@ -12,7 +12,7 @@ import (
 const (
 	maxSequenceNumber = 1 << 16 // 65536
 	reportInterval    = 1000
-	targetPackets     = 100_000
+	targetPackets     = 50_000
 )
 
 type SimpleTracker struct {

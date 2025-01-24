@@ -3,119 +3,177 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"strconv"
 	"strings"
-	"sync"
+	"time"
 )
 
 const (
-	MAX_SEQ_NUM     = 65536 // 2^16
-	REPORT_INTERVAL = 1000  // Report goodput every 1000 packets
+	maxSequenceNumber = 1 << 16 // 65536
+	reportInterval    = 1000
+	targetPackets     = 100_000
 )
 
-type Server struct {
-	receivedPackets map[int]bool
-	missingPackets  map[int]bool
-	totalReceived   int
-	totalExpected   int
-	mutex           sync.Mutex
-	lastReported    int
+type SimpleTracker struct {
+	lastSeq       int
+	wrapCount     int64
+	receivedCount int64
+	missingCount  int64
+	lastGap       int // Track the last gap size for debugging
 }
 
-func NewServer() *Server {
-	return &Server{
-		receivedPackets: make(map[int]bool),
-		missingPackets:  make(map[int]bool),
-		totalReceived:   0,
-		totalExpected:   0,
-		lastReported:    0,
+func newSimpleTracker() *SimpleTracker {
+	return &SimpleTracker{
+		lastSeq: -1, // indicates we haven't received any packet yet
 	}
 }
 
-func (s *Server) handleConnection(conn net.Conn) {
-	defer conn.Close()
-
-	// Handle initial connection
-	reader := bufio.NewReader(conn)
-	initMsg, err := reader.ReadString('\n')
-	if err != nil {
-		log.Printf("Error reading initial message: %v", err)
+func (st *SimpleTracker) recordPacket(seq int) {
+	if st.lastSeq == -1 {
+		// first packet ever
+		st.lastSeq = seq
+		st.receivedCount++
 		return
 	}
 
-	initMsg = strings.TrimSpace(initMsg)
-	if initMsg != "network" {
-		log.Printf("Invalid initial message: %s", initMsg)
-		return
+	// Calculate the effective gap considering wrap-around
+	gap := seq - st.lastSeq
+	if gap < -(maxSequenceNumber / 2) {
+		// Sequence wrapped around forward
+		gap += maxSequenceNumber
+		st.wrapCount++
+	} else if gap > (maxSequenceNumber / 2) {
+		// Out of order packet from previous wrap
+		gap -= maxSequenceNumber
 	}
 
-	// Send success message
-	conn.Write([]byte("success\n"))
-
-	// Handle sequence numbers
-	for {
-		seqStr, err := reader.ReadString('\n')
-		if err != nil {
-			log.Printf("Connection closed: %v", err)
-			return
-		}
-
-		seqNum, err := strconv.Atoi(strings.TrimSpace(seqStr))
-		if err != nil {
-			continue
-		}
-
-		s.handleSequenceNumber(seqNum, conn)
+	if gap > 0 {
+		// We found missing packets
+		st.missingCount += int64(gap - 1)
+		st.lastSeq = seq
+	} else if gap < 0 {
+		// Out of order packet, don't update lastSeq
 	}
+
+	st.receivedCount++
+	st.lastGap = gap // For debugging
 }
 
-func (s *Server) handleSequenceNumber(seqNum int, conn net.Conn) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	// Record received packet
-	s.receivedPackets[seqNum] = true
-	s.totalReceived++
-	s.totalExpected++
-
-	// Check for missing packets
-	for i := s.lastReported; i < seqNum; i++ {
-		if !s.receivedPackets[i] {
-			s.missingPackets[i] = true
-		}
+func (st *SimpleTracker) goodput() float64 {
+	// Total packets should be the sum of received and missing
+	totalPackets := st.receivedCount + st.missingCount
+	if totalPackets <= 0 {
+		return 0.0
 	}
-
-	// Send ACK
-	ack := fmt.Sprintf("ACK %d\n", seqNum)
-	conn.Write([]byte(ack))
-
-	// Report goodput every REPORT_INTERVAL packets
-	if s.totalReceived%REPORT_INTERVAL == 0 {
-		goodput := float64(s.totalReceived) / float64(s.totalExpected)
-		fmt.Printf("Goodput after %d packets: %.4f\n", s.totalReceived, goodput)
-		fmt.Printf("Missing packets: %d\n", len(s.missingPackets))
-	}
+	return float64(st.receivedCount) / float64(totalPackets)
 }
 
 func main() {
 	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+		fmt.Println("Error starting server:", err)
+		return
 	}
 	defer listener.Close()
-
-	fmt.Println("Server listening on :8080")
-	server := NewServer()
+	fmt.Println("Server listening on port 8080...")
 
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Printf("Failed to accept connection: %v", err)
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+		go handleConnection(conn)
+	}
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+	fmt.Println("New client connected:", conn.RemoteAddr().String())
+
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	tracker := newSimpleTracker()
+
+	if !scanner.Scan() {
+		fmt.Println("Error reading initial message (client disconnected?)")
+		return
+	}
+	initialMessage := scanner.Text()
+	fmt.Println("Initial message from client:", initialMessage)
+
+	_, err := conn.Write([]byte("success\n"))
+	if err != nil {
+		fmt.Println("Error sending success message:", err)
+		return
+	}
+
+	packetsReceivedSinceReport := 0
+	startTime := time.Now()
+	lastReportTime := startTime
+
+	for scanner.Scan() {
+		if tracker.receivedCount >= targetPackets {
+			break
+		}
+
+		line := scanner.Text()
+		if line == "" {
 			continue
 		}
 
-		go server.handleConnection(conn)
+		parts := strings.Split(line, ",")
+		for _, p := range parts {
+			seq, err := strconv.Atoi(strings.TrimSpace(p))
+			if err != nil {
+				continue
+			}
+
+			tracker.recordPacket(seq)
+			packetsReceivedSinceReport++
+
+			if packetsReceivedSinceReport >= reportInterval {
+				now := time.Now()
+				elapsed := now.Sub(lastReportTime)
+				lastReportTime = now
+
+				gp := tracker.goodput()
+				percent := float64(tracker.receivedCount) * 100.0 / float64(targetPackets)
+
+				fmt.Printf("Progress: %.3f%% | Received: %d | Missing: %d | Goodput: %.4f | Wraps: %d | Rate: %.2f pkts/s | Last Gap: %d\n",
+					percent,
+					tracker.receivedCount,
+					tracker.missingCount,
+					gp,
+					tracker.wrapCount,
+					float64(reportInterval)/elapsed.Seconds(),
+					tracker.lastGap,
+				)
+				packetsReceivedSinceReport = 0
+			}
+		}
+
+		// Send ACK
+		ackMsg := line + "\n"
+		if _, err := conn.Write([]byte(ackMsg)); err != nil {
+			fmt.Println("Error sending ACK:", err)
+			return
+		}
+	}
+
+	duration := time.Since(startTime)
+	finalGP := tracker.goodput()
+	fmt.Printf("\nFinal Stats:\n")
+	fmt.Printf("  Total Received : %d\n", tracker.receivedCount)
+	fmt.Printf("  Total Missing  : %d\n", tracker.missingCount)
+	fmt.Printf("  Final Goodput  : %.4f\n", finalGP)
+	fmt.Printf("  Total Wraps    : %d\n", tracker.wrapCount)
+	fmt.Printf("  Time Elapsed   : %.2fs\n", duration.Seconds())
+	fmt.Printf("  Average Rate   : %.2f pkts/s\n", float64(tracker.receivedCount)/duration.Seconds())
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Error reading from connection:", err)
 	}
 }
