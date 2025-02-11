@@ -3,177 +3,254 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"math/rand"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
+// Constants defining protocol and simulation parameters.
 const (
-	maxSequenceNumber = 1 << 16 // 65536
-	reportInterval    = 1000
-	targetPackets     = 500_000
+	maxSequenceNumber = 1 << 16                // Maximum sequence number before wrapping around.
+	slidingWindowSize = 1000                   // Number of packets sent per window.
+	dropProbability   = 0.01                   // Simulated probability that a packet is dropped.
+	retransmitAfter   = 100 * time.Millisecond // Time to wait before retransmitting a dropped packet.
+	targetPackets     = 500_000                // Total number of packets to process.
 )
 
-type SimpleTracker struct {
-	lastSeq       int
-	wrapCount     int64
-	receivedCount int64
-	missingCount  int64
-	lastGap       int // Track the last gap size for debugging
+// Packet represents a network packet along with metadata used for tracking.
+type Packet struct {
+	sequenceNumber int       // Unique identifier for the packet.
+	sendTime       time.Time // Last time the packet was sent.
+	attempts       int       // Number of send attempts.
+	wrapped        bool      // Indicates if this packet's sequence number is from a wrapped window.
 }
 
-func newSimpleTracker() *SimpleTracker {
-	return &SimpleTracker{
-		lastSeq: -1, // indicates we haven't received any packet yet
+// Client encapsulates the connection and state for sending packets.
+type Client struct {
+	conn            net.Conn        // TCP connection to the server.
+	sentPackets     map[int]*Packet // Packets sent and awaiting acknowledgment.
+	droppedPackets  map[int]*Packet // Packets that were simulated as dropped.
+	totalSent       int             // Total number of packets processed (sent or dropped).
+	totalDropped    int             // Total number of packets that were dropped.
+	currentSequence int             // Next sequence number to use.
+	wrapCount       int             // Count of how many times sequence numbers have wrapped.
+	mu              sync.Mutex      // Mutex to synchronize access to Client fields.
+}
+
+// NewClient initializes a new Client instance with the provided TCP connection.
+func NewClient(conn net.Conn) *Client {
+	return &Client{
+		conn:           conn,
+		sentPackets:    make(map[int]*Packet),
+		droppedPackets: make(map[int]*Packet),
 	}
 }
 
-func (st *SimpleTracker) recordPacket(seq int) {
-	if st.lastSeq == -1 {
-		// first packet ever
-		st.lastSeq = seq
-		st.receivedCount++
-		return
+// cleanupOldPackets removes packets from previous sequence wraps to free memory.
+func (c *Client) cleanupOldPackets() {
+	// Remove packets from sentPackets that belong to a previous (non-wrapped) window.
+	for seq, packet := range c.sentPackets {
+		if !packet.wrapped && c.wrapCount > 0 {
+			delete(c.sentPackets, seq)
+		}
 	}
-
-	// Calculate the effective gap considering wrap-around
-	gap := seq - st.lastSeq
-	if gap < -(maxSequenceNumber / 2) {
-		// Sequence wrapped around forward
-		gap += maxSequenceNumber
-		st.wrapCount++
-	} else if gap > (maxSequenceNumber / 2) {
-		// Out of order packet from previous wrap
-		gap -= maxSequenceNumber
+	// Do the same cleanup for droppedPackets.
+	for seq, packet := range c.droppedPackets {
+		if !packet.wrapped && c.wrapCount > 0 {
+			delete(c.droppedPackets, seq)
+		}
 	}
-
-	if gap > 0 {
-		// We found missing packets
-		st.missingCount += int64(gap - 1)
-		st.lastSeq = seq
-	} else if gap < 0 {
-		// Out of order packet, don't update lastSeq
-	}
-
-	st.receivedCount++
-	st.lastGap = gap // For debugging
 }
 
-func (st *SimpleTracker) goodput() float64 {
-	// Total packets should be the sum of received and missing
-	totalPackets := st.receivedCount + st.missingCount
-	if totalPackets <= 0 {
-		return 0.0
+// handleRetransmissions scans droppedPackets and retransmits those that are due.
+func (c *Client) handleRetransmissions() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	retransmitSeqs := make([]string, 0)
+
+	// Iterate over dropped packets to determine if they should be retransmitted.
+	for seq, packet := range c.droppedPackets {
+		if now.Sub(packet.sendTime) >= retransmitAfter {
+			// Simulate retransmission: determine if the packet is dropped again.
+			if rand.Float64() > dropProbability {
+				// Packet retransmission is successful.
+				retransmitSeqs = append(retransmitSeqs, strconv.Itoa(seq))
+				delete(c.droppedPackets, seq)
+				packet.sendTime = now
+				c.sentPackets[seq] = packet
+			} else {
+				// Packet is dropped again; update its send time and attempt counter.
+				packet.attempts++
+				packet.sendTime = now
+				c.totalDropped++
+			}
+		}
 	}
-	return float64(st.receivedCount) / float64(totalPackets)
+
+	// If any packets are due for retransmission, send them as a comma-separated list.
+	if len(retransmitSeqs) > 0 {
+		message := strings.Join(retransmitSeqs, ",") + "\n"
+		if _, err := c.conn.Write([]byte(message)); err != nil {
+			fmt.Println("Error sending retransmissions:", err)
+		}
+	}
+}
+
+// sendWindow sends a window of packets. For each packet, it either sends it successfully
+// or simulates a drop based on dropProbability.
+func (c *Client) sendWindow() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Check if the current window will wrap around the maximum sequence number.
+	if c.currentSequence+slidingWindowSize > maxSequenceNumber {
+		c.wrapCount++
+		c.cleanupOldPackets()
+	}
+
+	// Calculate the end of the current window.
+	windowEnd := c.currentSequence + slidingWindowSize
+	if windowEnd > maxSequenceNumber {
+		windowEnd = maxSequenceNumber
+	}
+
+	// This slice will hold the sequence numbers of packets that are actually sent.
+	sequenceNumbers := make([]string, 0, slidingWindowSize)
+
+	// Iterate over the sequence numbers in the current window.
+	for i := c.currentSequence; i < windowEnd && c.totalSent < targetPackets; i++ {
+		seq := i % maxSequenceNumber
+		isWrapped := c.wrapCount > 0
+
+		// Simulate packet drop using dropProbability.
+		if rand.Float64() > dropProbability {
+			// Packet is successfully sent.
+			sequenceNumbers = append(sequenceNumbers, strconv.Itoa(seq))
+			c.sentPackets[seq] = &Packet{
+				sequenceNumber: seq,
+				sendTime:       time.Now(),
+				attempts:       1,
+				wrapped:        isWrapped,
+			}
+		} else {
+			// Packet is dropped; record it for future retransmission.
+			c.droppedPackets[seq] = &Packet{
+				sequenceNumber: seq,
+				sendTime:       time.Now(),
+				attempts:       1,
+				wrapped:        isWrapped,
+			}
+			c.totalDropped++
+		}
+		c.totalSent++
+	}
+
+	// If any packets were actually sent, write them to the connection.
+	if len(sequenceNumbers) > 0 {
+		message := strings.Join(sequenceNumbers, ",") + "\n"
+		if _, err := c.conn.Write([]byte(message)); err != nil {
+			return err
+		}
+	}
+
+	// Update the current sequence number, wrapping around if needed.
+	c.currentSequence = windowEnd % maxSequenceNumber
+	return nil
 }
 
 func main() {
-	listener, err := net.Listen("tcp", ":8080")
+	// Seed the random number generator.
+	rand.Seed(time.Now().UnixNano())
+
+	// Establish a TCP connection to the server.
+	conn, err := net.Dial("tcp", "127.0.0.1:8080")
 	if err != nil {
-		fmt.Println("Error starting server:", err)
+		fmt.Println("Error connecting to server:", err)
 		return
 	}
-	defer listener.Close()
-	fmt.Println("Server listening on port 8080...")
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection:", err)
-			continue
-		}
-		go handleConnection(conn)
-	}
-}
-
-func handleConnection(conn net.Conn) {
 	defer conn.Close()
-	fmt.Println("New client connected:", conn.RemoteAddr().String())
 
+	// Initialize the client with the established connection.
+	client := NewClient(conn)
+
+	// Create a scanner to read incoming data from the server.
 	scanner := bufio.NewScanner(conn)
+	// Increase the scanner's buffer size to handle larger messages.
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	tracker := newSimpleTracker()
+	// Send an initial message to establish connection context.
+	if _, err := conn.Write([]byte("network\n")); err != nil {
+		fmt.Println("Error sending initial message:", err)
+		return
+	}
 
+	// Wait for a response from the server.
 	if !scanner.Scan() {
-		fmt.Println("Error reading initial message (client disconnected?)")
-		return
-	}
-	initialMessage := scanner.Text()
-	fmt.Println("Initial message from client:", initialMessage)
-
-	_, err := conn.Write([]byte("success\n"))
-	if err != nil {
-		fmt.Println("Error sending success message:", err)
+		fmt.Println("Error reading server response")
 		return
 	}
 
-	packetsReceivedSinceReport := 0
-	startTime := time.Now()
-	lastReportTime := startTime
+	// Create a ticker that triggers every 50 milliseconds.
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 
-	for scanner.Scan() {
-		if tracker.receivedCount >= targetPackets {
-			break
+	lastReport := time.Now()
+	done := make(chan bool)
+
+	// Start a goroutine to process acknowledgments (ACKs) from the server.
+	go func() {
+		for scanner.Scan() {
+			// The server sends ACKs as a comma-separated string of sequence numbers.
+			acks := strings.Split(scanner.Text(), ",")
+			client.mu.Lock()
+			for _, ackStr := range acks {
+				if seq, err := strconv.Atoi(ackStr); err == nil {
+					// Remove the acknowledged packet from the sentPackets map.
+					delete(client.sentPackets, seq)
+				}
+			}
+			client.mu.Unlock()
 		}
+		// Signal completion if the scanner stops receiving data.
+		done <- true
+	}()
 
-		line := scanner.Text()
-		if line == "" {
-			continue
-		}
-
-		parts := strings.Split(line, ",")
-		for _, p := range parts {
-			seq, err := strconv.Atoi(strings.TrimSpace(p))
-			if err != nil {
-				continue
+	// Main loop: send packet windows and handle retransmissions until the target is reached.
+	for client.totalSent < targetPackets {
+		select {
+		case <-ticker.C:
+			client.handleRetransmissions()
+			if err := client.sendWindow(); err != nil {
+				fmt.Println("Error sending window:", err)
+				return
 			}
 
-			tracker.recordPacket(seq)
-			packetsReceivedSinceReport++
-
-			if packetsReceivedSinceReport >= reportInterval {
-				now := time.Now()
-				elapsed := now.Sub(lastReportTime)
-				lastReportTime = now
-
-				gp := tracker.goodput()
-				percent := float64(tracker.receivedCount) * 100.0 / float64(targetPackets)
-
-				fmt.Printf("Progress: %.3f%% | Received: %d | Missing: %d | Goodput: %.4f | Wraps: %d | Rate: %.2f pkts/s | Last Gap: %d\n",
-					percent,
-					tracker.receivedCount,
-					tracker.missingCount,
-					gp,
-					tracker.wrapCount,
-					float64(reportInterval)/elapsed.Seconds(),
-					tracker.lastGap,
-				)
-				packetsReceivedSinceReport = 0
+			// Every second, print progress statistics.
+			if time.Since(lastReport) >= time.Second {
+				client.mu.Lock()
+				goodput := float64(client.totalSent-client.totalDropped) / float64(client.totalSent)
+				progress := float64(client.totalSent) * 100 / float64(targetPackets)
+				fmt.Printf("Progress: %.2f%%, Sent: %d, Dropped: %d, Goodput: %.4f, Wraps: %d\n",
+					progress, client.totalSent, client.totalDropped, goodput, client.wrapCount)
+				client.mu.Unlock()
+				lastReport = time.Now()
 			}
-		}
-
-		// Send ACK
-		ackMsg := line + "\n"
-		if _, err := conn.Write([]byte(ackMsg)); err != nil {
-			fmt.Println("Error sending ACK:", err)
+		case <-done:
+			// Exit the loop if the ACK processing goroutine signals done.
 			return
 		}
 	}
 
-	duration := time.Since(startTime)
-	finalGP := tracker.goodput()
-	fmt.Printf("\nFinal Stats:\n")
-	fmt.Printf("  Total Received : %d\n", tracker.receivedCount)
-	fmt.Printf("  Total Missing  : %d\n", tracker.missingCount)
-	fmt.Printf("  Final Goodput  : %.4f\n", finalGP)
-	fmt.Printf("  Total Wraps    : %d\n", tracker.wrapCount)
-	fmt.Printf("  Time Elapsed   : %.2fs\n", duration.Seconds())
-	fmt.Printf("  Average Rate   : %.2f pkts/s\n", float64(tracker.receivedCount)/duration.Seconds())
-
-	if err := scanner.Err(); err != nil {
-		fmt.Println("Error reading from connection:", err)
-	}
+	// After processing, print the final statistics.
+	client.mu.Lock()
+	finalGoodput := float64(client.totalSent-client.totalDropped) / float64(client.totalSent)
+	fmt.Printf("\nFinal Statistics:\n"+
+		"Total Sent: %d\nTotal Dropped: %d\nFinal Goodput: %.4f\nTotal Wraps: %d\n",
+		client.totalSent, client.totalDropped, finalGoodput, client.wrapCount)
+	client.mu.Unlock()
 }
