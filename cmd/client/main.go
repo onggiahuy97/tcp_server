@@ -3,216 +3,177 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"math/rand"
 	"net"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 const (
-	maxSequenceNumber = 1 << 16
-	slidingWindowSize = 1000
-	dropProbability   = 0.01
-	retransmitAfter   = 100 * time.Millisecond
+	maxSequenceNumber = 1 << 16 // 65536
+	reportInterval    = 1000
 	targetPackets     = 500_000
 )
 
-type Packet struct {
-	sequenceNumber int
-	sendTime       time.Time
-	attempts       int
-	wrapped        bool // Track if this packet is from a wrapped sequence
+type SimpleTracker struct {
+	lastSeq       int
+	wrapCount     int64
+	receivedCount int64
+	missingCount  int64
+	lastGap       int // Track the last gap size for debugging
 }
 
-type Client struct {
-	conn            net.Conn
-	sentPackets     map[int]*Packet
-	droppedPackets  map[int]*Packet
-	totalSent       int
-	totalDropped    int
-	currentSequence int
-	wrapCount       int
-	mu              sync.Mutex
-}
-
-func NewClient(conn net.Conn) *Client {
-	return &Client{
-		conn:           conn,
-		sentPackets:    make(map[int]*Packet),
-		droppedPackets: make(map[int]*Packet),
+func newSimpleTracker() *SimpleTracker {
+	return &SimpleTracker{
+		lastSeq: -1, // indicates we haven't received any packet yet
 	}
 }
 
-func (c *Client) cleanupOldPackets() {
-	// Cleanup old packets from previous wraps
-	for seq, packet := range c.sentPackets {
-		if !packet.wrapped && c.wrapCount > 0 {
-			delete(c.sentPackets, seq)
-		}
+func (st *SimpleTracker) recordPacket(seq int) {
+	if st.lastSeq == -1 {
+		// first packet ever
+		st.lastSeq = seq
+		st.receivedCount++
+		return
 	}
-	for seq, packet := range c.droppedPackets {
-		if !packet.wrapped && c.wrapCount > 0 {
-			delete(c.droppedPackets, seq)
-		}
+
+	// Calculate the effective gap considering wrap-around
+	gap := seq - st.lastSeq
+	if gap < -(maxSequenceNumber / 2) {
+		// Sequence wrapped around forward
+		gap += maxSequenceNumber
+		st.wrapCount++
+	} else if gap > (maxSequenceNumber / 2) {
+		// Out of order packet from previous wrap
+		gap -= maxSequenceNumber
 	}
+
+	if gap > 0 {
+		// We found missing packets
+		st.missingCount += int64(gap - 1)
+		st.lastSeq = seq
+	} else if gap < 0 {
+		// Out of order packet, don't update lastSeq
+	}
+
+	st.receivedCount++
+	st.lastGap = gap // For debugging
 }
 
-func (c *Client) handleRetransmissions() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	now := time.Now()
-	retransmitSeqs := make([]string, 0)
-
-	for seq, packet := range c.droppedPackets {
-		if now.Sub(packet.sendTime) >= retransmitAfter {
-			if rand.Float64() > dropProbability {
-				retransmitSeqs = append(retransmitSeqs, strconv.Itoa(seq))
-				delete(c.droppedPackets, seq)
-				packet.sendTime = now
-				c.sentPackets[seq] = packet
-			} else {
-				packet.attempts++
-				packet.sendTime = now
-				c.totalDropped++
-			}
-		}
+func (st *SimpleTracker) goodput() float64 {
+	// Total packets should be the sum of received and missing
+	totalPackets := st.receivedCount + st.missingCount
+	if totalPackets <= 0 {
+		return 0.0
 	}
-
-	if len(retransmitSeqs) > 0 {
-		if _, err := c.conn.Write([]byte(strings.Join(retransmitSeqs, ",") + "\n")); err != nil {
-			fmt.Println("Error sending retransmissions:", err)
-		}
-	}
-}
-
-func (c *Client) sendWindow() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// Check for wrap-around
-	if c.currentSequence+slidingWindowSize > maxSequenceNumber {
-		c.wrapCount++
-		c.cleanupOldPackets()
-	}
-
-	windowEnd := c.currentSequence + slidingWindowSize
-	if windowEnd > maxSequenceNumber {
-		windowEnd = maxSequenceNumber
-	}
-
-	sequenceNumbers := make([]string, 0, slidingWindowSize)
-	for i := c.currentSequence; i < windowEnd && c.totalSent < targetPackets; i++ {
-		seq := i % maxSequenceNumber
-		isWrapped := c.wrapCount > 0
-
-		if rand.Float64() > dropProbability {
-			sequenceNumbers = append(sequenceNumbers, strconv.Itoa(seq))
-			c.sentPackets[seq] = &Packet{
-				sequenceNumber: seq,
-				sendTime:       time.Now(),
-				attempts:       1,
-				wrapped:        isWrapped,
-			}
-		} else {
-			c.droppedPackets[seq] = &Packet{
-				sequenceNumber: seq,
-				sendTime:       time.Now(),
-				attempts:       1,
-				wrapped:        isWrapped,
-			}
-			c.totalDropped++
-		}
-		c.totalSent++
-	}
-
-	if len(sequenceNumbers) > 0 {
-		if _, err := c.conn.Write([]byte(strings.Join(sequenceNumbers, ",") + "\n")); err != nil {
-			return err
-		}
-	}
-
-	c.currentSequence = windowEnd % maxSequenceNumber
-	return nil
+	return float64(st.receivedCount) / float64(totalPackets)
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
-
-	conn, err := net.Dial("tcp", "127.0.0.1:8080")
+	listener, err := net.Listen("tcp", ":8080")
 	if err != nil {
-		fmt.Println("Error connecting to server:", err)
+		fmt.Println("Error starting server:", err)
 		return
 	}
-	defer conn.Close()
+	defer listener.Close()
+	fmt.Println("Server listening on port 8080...")
 
-	client := NewClient(conn)
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+		go handleConnection(conn)
+	}
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+	fmt.Println("New client connected:", conn.RemoteAddr().String())
+
 	scanner := bufio.NewScanner(conn)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	// Connection setup
-	if _, err := conn.Write([]byte("network\n")); err != nil {
-		fmt.Println("Error sending initial message:", err)
-		return
-	}
+	tracker := newSimpleTracker()
 
 	if !scanner.Scan() {
-		fmt.Println("Error reading server response")
+		fmt.Println("Error reading initial message (client disconnected?)")
+		return
+	}
+	initialMessage := scanner.Text()
+	fmt.Println("Initial message from client:", initialMessage)
+
+	_, err := conn.Write([]byte("success\n"))
+	if err != nil {
+		fmt.Println("Error sending success message:", err)
 		return
 	}
 
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
+	packetsReceivedSinceReport := 0
+	startTime := time.Now()
+	lastReportTime := startTime
 
-	lastReport := time.Now()
-	done := make(chan bool)
-
-	// Start ACK processing in separate goroutine
-	go func() {
-		for scanner.Scan() {
-			acks := strings.Split(scanner.Text(), ",")
-			client.mu.Lock()
-			for _, ackStr := range acks {
-				if seq, err := strconv.Atoi(ackStr); err == nil {
-					delete(client.sentPackets, seq)
-				}
-			}
-			client.mu.Unlock()
+	for scanner.Scan() {
+		if tracker.receivedCount >= targetPackets {
+			break
 		}
-		done <- true
-	}()
 
-	for client.totalSent < targetPackets {
-		select {
-		case <-ticker.C:
-			client.handleRetransmissions()
-			if err := client.sendWindow(); err != nil {
-				fmt.Println("Error sending window:", err)
-				return
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Split(line, ",")
+		for _, p := range parts {
+			seq, err := strconv.Atoi(strings.TrimSpace(p))
+			if err != nil {
+				continue
 			}
 
-			if time.Since(lastReport) >= time.Second {
-				client.mu.Lock()
-				goodput := float64(client.totalSent-client.totalDropped) / float64(client.totalSent)
-				fmt.Printf("Progress: %.2f%%, Sent: %d, Dropped: %d, Goodput: %.4f, Wraps: %d\n",
-					float64(client.totalSent)*100/targetPackets,
-					client.totalSent,
-					client.totalDropped,
-					goodput,
-					client.wrapCount)
-				client.mu.Unlock()
-				lastReport = time.Now()
+			tracker.recordPacket(seq)
+			packetsReceivedSinceReport++
+
+			if packetsReceivedSinceReport >= reportInterval {
+				now := time.Now()
+				elapsed := now.Sub(lastReportTime)
+				lastReportTime = now
+
+				gp := tracker.goodput()
+				percent := float64(tracker.receivedCount) * 100.0 / float64(targetPackets)
+
+				fmt.Printf("Progress: %.3f%% | Received: %d | Missing: %d | Goodput: %.4f | Wraps: %d | Rate: %.2f pkts/s | Last Gap: %d\n",
+					percent,
+					tracker.receivedCount,
+					tracker.missingCount,
+					gp,
+					tracker.wrapCount,
+					float64(reportInterval)/elapsed.Seconds(),
+					tracker.lastGap,
+				)
+				packetsReceivedSinceReport = 0
 			}
-		case <-done:
+		}
+
+		// Send ACK
+		ackMsg := line + "\n"
+		if _, err := conn.Write([]byte(ackMsg)); err != nil {
+			fmt.Println("Error sending ACK:", err)
 			return
 		}
 	}
 
-	client.mu.Lock()
-	finalGoodput := float64(client.totalSent-client.totalDropped) / float64(client.totalSent)
-	fmt.Printf("\nFinal Statistics:\nTotal Sent: %d\nTotal Dropped: %d\nFinal Goodput: %.4f\nTotal Wraps: %d\n",
-		client.totalSent, client.totalDropped, finalGoodput, client.wrapCount)
-	client.mu.Unlock()
+	duration := time.Since(startTime)
+	finalGP := tracker.goodput()
+	fmt.Printf("\nFinal Stats:\n")
+	fmt.Printf("  Total Received : %d\n", tracker.receivedCount)
+	fmt.Printf("  Total Missing  : %d\n", tracker.missingCount)
+	fmt.Printf("  Final Goodput  : %.4f\n", finalGP)
+	fmt.Printf("  Total Wraps    : %d\n", tracker.wrapCount)
+	fmt.Printf("  Time Elapsed   : %.2fs\n", duration.Seconds())
+	fmt.Printf("  Average Rate   : %.2f pkts/s\n", float64(tracker.receivedCount)/duration.Seconds())
+
+	if err := scanner.Err(); err != nil {
+		fmt.Println("Error reading from connection:", err)
+	}
 }
