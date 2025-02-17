@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"strings"
 )
 
 func main() {
@@ -12,9 +13,7 @@ func main() {
 		fmt.Println("Error starting server:", err)
 		return
 	}
-
 	defer listener.Close()
-
 	fmt.Printf("Server listening on %s...\n", serverAddr)
 
 	for {
@@ -23,40 +22,46 @@ func main() {
 			fmt.Println("Error accepting connection:", err)
 			continue
 		}
-
 		go handleConnection(conn)
 	}
-
 }
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-
 	fmt.Printf("Accepted connection from %s\n", conn.RemoteAddr())
 
 	buffer := make([]byte, 1024)
 
 	for {
-		// Read incoming data into the buffer.
 		n, err := conn.Read(buffer)
 		if err != nil {
-			fmt.Println("Error reading:", err)
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			fmt.Printf("Connection closed by client: %v\n", err)
 			return
 		}
 
-		data := string(buffer[:n])
-		fmt.Printf("Received data: %s", data)
+		data := strings.TrimSpace(string(buffer[:n]))
+		fmt.Printf("Received data: %s\n", data)
 
-		if data == "network\n" {
+		switch {
+		case data == "network":
 			fmt.Printf("Sending: success\n")
 			conn.Write([]byte("success\n"))
-		} else if data == "finish\n" {
+
+		case data == "finish":
 			fmt.Printf("Sending: goodbye\n")
 			conn.Write([]byte("goodbye\n"))
 			return
-		} else {
-			fmt.Printf("Sending: unknown\n")
-			conn.Write([]byte("unknown\n"))
+
+		case strings.HasPrefix(data, "SEQ"):
+
+			// print SEQ message
+			fmt.Printf("Received SEQ message: %s\n", data)
+
+		default:
+			fmt.Printf("Received unknown message: %s\n", data)
 		}
 	}
 }
