@@ -1,35 +1,44 @@
 import socket
 
-HOST = "127.0.0.1"  # Server's hostname or IP address
-PORT = 12345        # Port to connect to
+def connect_to_server():
+    # Create a TCP socket
+    client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    
+    try:
+        # Connect to the server
+        server_address = ('localhost', 8080)
+        print(f"Connecting to server at {server_address[0]}:{server_address[1]}")
+        client.connect(server_address)
+        
+        # Send the message
+        message = "network\n"
+        print(f"Sending message: {message.strip()}")
+        client.send(message.encode())
+        
+        # Receive the response
+        response = client.recv(1024).decode()
+        print(f"Server response: {response.strip()}")
 
-def start_client():
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-        client_socket.connect((HOST, PORT))
-        print("Connected to server.")
+        # Send finish message 
+        message = "finish\n"
+        print(f"Sending message: {message.strip()}")
+        client.send(message.encode())
 
-        # Send the initialization message
-        client_socket.sendall(b"network")
+        # Receive the response
+        response = client.recv(1024).decode()
+        print(f"Server response: {response.strip()}")
 
-        # Wait for the response
-        response = client_socket.recv(1024).decode().strip()
-        if response == "success":
-            print("Connection established successfully!")
-
-            # Communication loop
-            while True:
-                message = input("Client: ")  # Send message
-                if not message:
-                    break  # Exit if input is empty
-                client_socket.sendall(message.encode())
-
-                data = client_socket.recv(1024)
-                if not data:
-                    break  # Server closed connection
-                print(f"Server: {data.decode().strip()}")
-
-        else:
-            print("Unexpected response from server, closing connection.")
+        if response.strip() == "goodbyte":
+            print("Closing connection")
+            client.close()
+            return 
+        
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    
+    finally:
+        print("Closing connection")
+        client.close()
 
 if __name__ == "__main__":
-    start_client()
+    connect_to_server()
