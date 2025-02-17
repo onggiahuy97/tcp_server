@@ -1,7 +1,11 @@
 package main
 
 import (
+	"fmt"
+	"math/rand"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -56,6 +60,42 @@ func (c *Client) cleanupOldPackets() {
 	for seq, packet := range c.droppedPackets {
 		if !packet.wrapped && c.wrapCount > 0 {
 			delete(c.droppedPackets, seq)
+		}
+	}
+}
+
+// handleRetransmissions scans droppedPackets and retransmits those that are due.
+func (c *Client) handleRetransmissions() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	retransmitSeqs := make([]string, 0)
+
+	// Iterate over dropped packets to determine if they should be retransmitted.
+	for seq, packet := range c.droppedPackets {
+		if now.Sub(packet.sendTime) >= retransmitAfter {
+			// Simulate retransmission: determine if the packet is dropped again.
+			if rand.Float64() > dropProbability {
+				// Packet retransmission is successful.
+				retransmitSeqs = append(retransmitSeqs, strconv.Itoa(seq))
+				delete(c.droppedPackets, seq)
+				packet.sendTime = now
+				c.sentPackets[seq] = packet
+			} else {
+				// Packet is dropped again; update its send time and attempt counter.
+				packet.attempts++
+				packet.sendTime = now
+				c.totalDropped++
+			}
+		}
+	}
+
+	// If any packet are due for retransmission, send them as a comma-separated list.
+	if len(retransmitSeqs) > 0 {
+		message := strings.Join(retransmitSeqs, ",") + "\n"
+		if _, err := c.conn.Write([]byte(message)); err != nil {
+			fmt.Println("Error sending retransmissions:", err)
 		}
 	}
 }
