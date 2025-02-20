@@ -36,7 +36,7 @@ class SimpleWindowClient:
                     print(f"Sending: {message.strip()}")
                     self.client.send(message.encode())
                     self.sequence += 1
-                    time.sleep(0.5)  # Small delay between sequences
+                    time.sleep(0.2)  # Small delay between sequences
                 
         except KeyboardInterrupt:
             print("\nTransmission interrupted by user")
