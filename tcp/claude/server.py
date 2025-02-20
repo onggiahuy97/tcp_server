@@ -50,6 +50,19 @@ class NetworkStatistics:
     dropped_packets: List[Tuple[float, int]] = field(default_factory=list)
     goodput_records: List[Tuple[float, float]] = field(default_factory=list)
 
+    def should_log(self) -> bool:
+        """Check if we should log progress based on packet count."""
+        return (self.total_packets > 0 and 
+                self.total_packets % 100000 == 0)  # Log every 100k packets
+
+    def get_progress_stats(self) -> str:
+        """Get a concise progress status string."""
+        elapsed = time.time() - self.start_time
+        return (f"Progress: {self.total_packets:,} total packets, "
+                f"{self.unique_packets:,} unique, "
+                f"goodput: {self.calculate_goodput():.1f}%, "
+                f"time: {elapsed:.1f}s")
+
     def record_packet(self, seq: int, window: int, retransmit_count: int) -> None:
         """
         Record statistics for a received packet.
@@ -243,6 +256,9 @@ class SlidingWindowServer:
             self.stats.record_packet(seq, window, retransmit_count)
             self.stats.update_sequence_tracking(seq)
             self.stats.record_goodput()
+
+            if self.stats.should_log():
+                print(self.stats.get_progress_stats())
             
             # Send cumulative ACK
             self.connection.sendall(f"{self.stats.expected_seq}\n".encode())
