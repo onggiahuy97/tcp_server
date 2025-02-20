@@ -38,7 +38,7 @@ func handleConnection(conn net.Conn) {
 			return
 		}
 		data := strings.TrimSpace(string(buffer[:n]))
-		fmt.Printf("Received data: %s\n", data)
+		// fmt.Printf("Received data: %s\n", data)
 		switch {
 		case data == "network":
 			fmt.Printf("Sending: success\n")
