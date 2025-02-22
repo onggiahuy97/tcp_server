@@ -26,7 +26,7 @@ class Client:
             return False 
 
     def send_data(self):
-        max_seq = 100 
+        max_seq = 20 
         winddow_start = 0 
 
         while winddow_start < max_seq: 
@@ -41,7 +41,8 @@ class Client:
             ack_response = self.socket.recv(1024).decode().strip()
             if ack_response.startswith("ACK"):
                 ack_num = int(ack_response.split()[1])
-                print(f"Received {ack_response}, sliding window")
+                print(f"ack_response: {ack_response}\n")
+                print(f"ack_num: {ack_num}\n")
 
                 if ack_num > winddow_start:
                     winddow_start = ack_num

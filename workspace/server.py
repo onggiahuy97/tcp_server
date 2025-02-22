@@ -10,6 +10,7 @@ class Server:
         self.port = port 
         self.socket: Optional[socket.socket] = None 
         self.connection: Optional[socket.socket] = None 
+        self.expected_seq = 0
 
     def start(self): 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -49,12 +50,14 @@ class Server:
                     print(f"Client disconnected")
                     return 
                 seq_num = int(data)
+                print(f"Recv: {seq_num}\n")
                 sequences.append(seq_num)
 
                 if seq_num == self.expected_seq:
                     self.expected_seq += 1
 
                 self.connection.sendall(f"ACK {self.expected_seq}\n".encode())
+                print(f"Send ACK: {self.expected_seq}")
 
 
         except Exception as e: 
