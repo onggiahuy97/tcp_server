@@ -1,5 +1,5 @@
 import socket
-from typing import Optional 
+from typing import Optional, List 
 
 DEFAULT_PORT = 8080
 MAC_IP4_ADDR = "10.0.0.241"
@@ -40,13 +40,23 @@ class Server:
             print(f"Error: No active connection")
             return
 
+        sequences: List[int] = [] 
+
         try: 
             while True: 
                 data = self.connection.recv(1024)
                 if not data: 
                     print(f"Client disconnected")
                     return 
-                print(f"Recv: {data}")
+                seq_num = int(data)
+                sequences.append(seq_num)
+
+                if seq_num == self.expected_seq:
+                    self.expected_seq += 1
+
+                self.connection.sendall(f"ACK {self.expected_seq}\n".encode())
+
+
         except Exception as e: 
             print(f"Error receiving data: {e}")
         finally: 
