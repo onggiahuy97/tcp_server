@@ -14,7 +14,9 @@ class Server:
         self.MAX_SEQ_NUM = 2**16
         self.WINDOW_SIZE = 4
         self.expected_seq = 0 
-        self.last_ack = 0
+        self.last_ack = -1
+        self.missing_seq: List[int] = []
+        self.retransmit_seq: List[int] = []
 
     def start(self): 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -22,6 +24,10 @@ class Server:
         self.socket.listen(1)
         print(f"Server listening on port {self.port}...")
 
+    def reset(self):
+        self.expected_seq = 0
+        self.last_ack = -1
+        self.missing_seq = []
     
     def accept_connection(self) -> bool: 
         if self.socket == None: 
@@ -29,6 +35,7 @@ class Server:
             return False 
 
         try:
+            self.reset()
             self.connection, addr = self.socket.accept()
             print(f"Accept connection from: {addr}")
             handshake = self.connection.recv(1024).decode().strip() 
@@ -54,15 +61,27 @@ class Server:
 
                 message = data.decode().strip().split(" ")
 
+                if message[0] == "RETRANSMIT":
+                    for seq in message[1:]:
+                        if seq != "dropped": 
+                            self.retransmit_seq.append(int(seq))
+                    print(f"Retransmitting: {message[1:]}")
+                    continue
+
                 for seq in message:
                     if seq != "dropped":
                         self.last_ack = int(seq) 
                     else: 
+                        self.missing_seq.append(self.last_ack + 1)
                         break 
 
-                print(f"Received message: {message} --- Last ack: {self.last_ack}")
+                # print(f"Received: {message} --- Last ack: {self.last_ack}")
 
                 self.connection.sendall(str(f"ACK {self.last_ack}").encode())
+
+            print(f"Missing seq: {[x for x in self.missing_seq if x not in self.retransmit_seq]}")
+            goodput = (self.last_ack + 1) / len(self.retransmit_seq)
+            print(f"Goodput: {goodput}")
                 
         except Exception as e: 
             print(f"Error receiving data: {e}")

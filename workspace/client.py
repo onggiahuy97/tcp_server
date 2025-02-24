@@ -1,6 +1,7 @@
 import socket 
 import time 
 import random
+from typing import List
 
 SERVER_IP = "localhost"
 SERVER_PORT = 8080
@@ -13,13 +14,13 @@ class Client:
         
         # Sequence/window management
         self.MAX_SEQ_NUM = 2**16
-        self.TOTAL_PACKETS = 100
+        self.TOTAL_PACKETS = 5000
         self.WINDOW_SIZE = 4
 
         self.window = "" 
         self.seq_num = 0
         self.total_packets_sent = 0
-        self.dropped_packets = []
+        self.dropped_packets: List[int] = []
         self.recv_ack = 0
         
     def connect(self): 
@@ -35,7 +36,28 @@ class Client:
             return False 
 
     def should_drop(self):
-        return random.random() < 0.1
+        return random.random() < 0.05
+
+    def handle_retransmit(self):
+        # Get first 4 elements of self.dropped_packets
+        retransmit_seq = self.dropped_packets[:4]
+        self.window = "RETRANSMIT "
+        for res_seq in retransmit_seq:
+            seq = ""
+            if self.should_drop():
+                seq = f"dropped"
+                self.dropped_packets.append(res_seq)
+            else:
+                seq = res_seq
+
+            self.window += f"{seq} "
+
+        self.dropped_packets = self.dropped_packets[4:]
+
+        print(f"{self.window}")
+        self.socket.sendall(self.window.encode())
+        self.window = ""
+
 
     def send_data(self):
         while self.total_packets_sent < self.TOTAL_PACKETS:
@@ -53,22 +75,31 @@ class Client:
 
             self.socket.sendall(self.window.encode())
 
-            self.total_packets_sent += self.WINDOW_SIZE
-            time.sleep(0.01)
 
             try :
                 data = self.socket.recv(1024).decode().strip().split(" ")
-                print(f"Sent window: {self.window}\t\t -- Received: {data}")
+                # sent_window = f"Sent window: {self.window}"
+                # recv_text = f"-- Received: {data}"
+                # print(f"{sent_window.ljust(50)} {recv_text.ljust(30)}")
                 self.window = ""
                 self.recv_ack = int(data[-1])
-                self.seq_num = self.recv_ack
+                # Either retranmit now or after 100 sequences
+
             except Exception as e: 
                 print(f"Error receiving acks: {e}")
                 break
 
+            self.total_packets_sent += self.WINDOW_SIZE
+            if self.total_packets_sent % 100 == 0:
+                self.handle_retransmit()
+
+            time.sleep(0.001)
 
 
         print("All sequences sent successfully")
+        print(f"Dropped packets: {self.dropped_packets}")
+        rate = (self.total_packets_sent - len(self.dropped_packets)) / self.TOTAL_PACKETS * 100
+        print(f"Success rate: {rate}%")
         self.socket.close()
 
 if __name__ == "__main__":
