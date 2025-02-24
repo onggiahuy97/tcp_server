@@ -1,7 +1,8 @@
 import socket 
 import time 
+import random
 
-SERVER_IP = "10.0.0.241"
+SERVER_IP = "localhost"
 SERVER_PORT = 8080
 
 class Client: 
@@ -12,10 +13,14 @@ class Client:
         
         # Sequence/window management
         self.MAX_SEQ_NUM = 2**16
-        self.TOTAL_PACKETS = 10_000_000
+        self.TOTAL_PACKETS = 100
         self.WINDOW_SIZE = 4
-        self.base_seq = 0      # Start of the window
-        self.next_seq_num = 0  # Next sequence to send
+
+        self.window = "" 
+        self.seq_num = 0
+        self.total_packets_sent = 0
+        self.dropped_packets = []
+        self.recv_ack = 0
         
     def connect(self): 
         self.socket.connect((self.server_ip, self.server_port))
@@ -29,27 +34,40 @@ class Client:
             print("Handshake failed!")
             return False 
 
+    def should_drop(self):
+        return random.random() < 0.1
+
     def send_data(self):
-        while self.base_seq < self.MAX_SEQ_NUM:
-            # Send packets up to window size
-            while (self.next_seq_num < self.base_seq + self.WINDOW_SIZE and 
-                   self.next_seq_num < self.MAX_SEQ_NUM):
-                print(f"Sending sequence number: {self.next_seq_num}")
-                self.socket.sendall(f"{self.next_seq_num}\n".encode())
-                self.next_seq_num += 1
-                time.sleep(0.1)
-            
-            # Wait for ACK
-            ack_response = self.socket.recv(1024).decode().strip()
-            if ack_response.startswith("ACK"):
-                ack_num = int(ack_response.split()[1])
-                print(f"Received ACK: {ack_num}")
-                
-                if ack_num > self.base_seq:
-                    print(f"Window moved: {self.base_seq} -> {ack_num}")
-                    self.base_seq = ack_num
-                    # Don't adjust next_seq_num here - it moves independently
-            
+        while self.total_packets_sent < self.TOTAL_PACKETS:
+
+            for _ in range(self.WINDOW_SIZE):
+                seq = ""
+                if self.should_drop():
+                    seq = f"dropped"
+                    self.dropped_packets.append(self.seq_num)
+                else: 
+                    seq = self.seq_num
+
+                self.window += f"{seq} "
+                self.seq_num = (self.seq_num + 1) % self.MAX_SEQ_NUM
+
+            self.socket.sendall(self.window.encode())
+
+            self.total_packets_sent += self.WINDOW_SIZE
+            time.sleep(0.01)
+
+            try :
+                data = self.socket.recv(1024).decode().strip().split(" ")
+                print(f"Sent window: {self.window}\t\t -- Received: {data}")
+                self.window = ""
+                self.recv_ack = int(data[-1])
+                self.seq_num = self.recv_ack
+            except Exception as e: 
+                print(f"Error receiving acks: {e}")
+                break
+
+
+
         print("All sequences sent successfully")
         self.socket.close()
 
