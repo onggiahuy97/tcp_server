@@ -1,0 +1,6 @@
+Metric,Value
+Total Execution Time (s),6.92
+Total Packets Received,994023.0
+Total Missing Packets,5977.0
+Final Goodput (%),99.01
+Average Packet Rate (pkts/s),143627.28
