@@ -1,0 +1,115 @@
+
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>TCP Sliding Window Performance Report</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1 { color: #2c3e50; }
+            h2 { color: #3498db; margin-top: 30px; }
+            table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #f2f2f2; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            img { max-width: 100%; height: auto; margin-top: 20px; }
+        </style>
+    </head>
+    <body>
+        <h1>TCP Sliding Window Performance Report</h1>
+        
+        <h2>Performance Summary</h2>
+        <table>
+            <tr>
+                <th>Metric</th>
+                <th>Value</th>
+            </tr>
+    
+            <tr>
+                <td>Total Execution Time (s)</td>
+                <td>56.35</td>
+            </tr>
+        
+            <tr>
+                <td>Total Packets Received</td>
+                <td>9939318.0</td>
+            </tr>
+        
+            <tr>
+                <td>Total Missing Packets</td>
+                <td>60682.0</td>
+            </tr>
+        
+            <tr>
+                <td>Final Goodput (%)</td>
+                <td>99.39</td>
+            </tr>
+        
+            <tr>
+                <td>Average Packet Rate (pkts/s)</td>
+                <td>176389.48</td>
+            </tr>
+        
+        </table>
+        
+        <h2>Performance Graphs</h2>
+        <img src="tcp_performance_graphs.png" alt="TCP Performance Graphs">
+        
+        <h2>Required Graphs</h2>
+        <img src="tcp_required_graphs.png" alt="TCP Required Graphs">
+        
+        <h2>Retransmission Table</h2>
+        <table>
+            <tr>
+                <th># of retransmissions</th>
+                <th># of packets</th>
+            </tr>
+    
+            <tr>
+                <td>1</td>
+                <td>42477</td>
+            </tr>
+        
+            <tr>
+                <td>2</td>
+                <td>12136</td>
+            </tr>
+        
+            <tr>
+                <td>3</td>
+                <td>4247</td>
+            </tr>
+        
+            <tr>
+                <td>4</td>
+                <td>1820</td>
+            </tr>
+        
+        </table>
+        
+        <h2>Detailed Metrics</h2>
+        <table>
+            <tr>
+    <th>Checkpoint</th><th>Time (s)</th><th>Packets Received</th><th>Missing Packets</th><th>Goodput (%)</th><th>Packet Rate (pkts/s)</th></tr><tr><td>1.0</td><td>0.02</td><td>1001.0</td><td>7.0</td><td>99.31</td><td>nan</td></tr><tr><td>2.0</td><td>0.03</td><td>2001.0</td><td>7.0</td><td>99.65</td><td>78459.8</td></tr><tr><td>3.0</td><td>0.03</td><td>3000.0</td><td>12.0</td><td>99.6</td><td>179233.03</td></tr><tr><td>4.0</td><td>0.04</td><td>4000.0</td><td>16.0</td><td>99.6</td><td>181949.68</td></tr><tr><td>5.0</td><td>0.05</td><td>5003.0</td><td>21.0</td><td>99.58</td><td>191553.0</td></tr><tr><td>6.0</td><td>0.05</td><td>6002.0</td><td>30.0</td><td>99.5</td><td>195233.89</td></tr><tr><td>7.0</td><td>0.06</td><td>7001.0</td><td>35.0</td><td>99.5</td><td>185896.61</td></tr><tr><td>8.0</td><td>0.06</td><td>8003.0</td><td>41.0</td><td>99.49</td><td>189310.48</td></tr><tr><td>9.0</td><td>0.07</td><td>9001.0</td><td>47.0</td><td>99.48</td><td>188469.85</td></tr><tr><td>10.0</td><td>0.07</td><td>10001.0</td><td>51.0</td><td>99.49</td><td>186396.94</td></tr><tr><td>11.0</td><td>0.08</td><td>11003.0</td><td>61.0</td><td>99.45</td><td>182187.13</td></tr><tr><td>12.0</td><td>0.08</td><td>12000.0</td><td>64.0</td><td>99.47</td><td>200034.49</td></tr><tr><td>13.0</td><td>0.09</td><td>13000.0</td><td>72.0</td><td>99.45</td><td>189641.63</td></tr><tr><td>14.0</td><td>0.09</td><td>14002.0</td><td>82.0</td><td>99.42</td><td>184880.02</td></tr><tr><td>15.0</td><td>0.1</td><td>15003.0</td><td>93.0</td><td>99.38</td><td>179938.21</td></tr><tr><td>16.0</td><td>0.1</td><td>16001.0</td><td>99.0</td><td>99.39</td><td>163365.55</td></tr><tr><td>17.0</td><td>0.11</td><td>17002.0</td><td>102.0</td><td>99.4</td><td>184850.01</td></tr><tr><td>18.0</td><td>0.12</td><td>18002.0</td><td>106.0</td><td>99.41</td><td>193464.21</td></tr><tr><td>19.0</td><td>0.12</td><td>19002.0</td><td>110.0</td><td>99.42</td><td>184429.87</td></tr><tr><td>20.0</td><td>0.13</td><td>20003.0</td><td>117.0</td><td>99.42</td><td>189189.72</td></tr>
+        </table>
+        
+        <p><em>Note: Table limited to first 20 checkpoints. See CSV file for complete data.</em></p>
+        
+        <h2>Project Analysis</h2>
+        <p>
+            This TCP sliding window implementation uses a window size of 4 and a 1% packet drop rate.
+            Throughout the transmission, we maintained proper sequence tracking and retransmission
+            of dropped packets.
+        </p>
+        <p>
+            As shown in the graphs, the sequence numbers increase steadily over time, while dropped
+            packets accumulate at a rate consistent with the 1% drop probability. The retransmission
+            mechanism successfully recovers many of the dropped packets, leading to a high goodput.
+        </p>
+        <p>
+            The retransmission table shows the distribution of packets across different retransmission
+            counts. Most packets required only a single retransmission, with fewer packets needing
+            multiple retransmissions.
+        </p>
+    </body>
+    </html>
+    

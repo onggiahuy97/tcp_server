@@ -14,7 +14,7 @@ class Client:
         
         # Sequence/window management
         self.MAX_SEQ_NUM = 2**16
-        self.TOTAL_PACKETS = 5000
+        self.TOTAL_PACKETS = 1_000_000
         self.WINDOW_SIZE = 4
 
         self.window = "" 
@@ -22,6 +22,7 @@ class Client:
         self.total_packets_sent = 0
         self.dropped_packets: List[int] = []
         self.recv_ack = 0
+        self.wrap = 0
         
     def connect(self): 
         self.socket.connect((self.server_ip, self.server_port))
@@ -36,28 +37,37 @@ class Client:
             return False 
 
     def should_drop(self):
-        return random.random() < 0.05
+        return random.random() < 0.01
 
     def handle_retransmit(self):
-        # Get first 4 elements of self.dropped_packets
-        retransmit_seq = self.dropped_packets[:4]
+        # Process up to 4 dropped packets
+        packets_to_process = min(self.WINDOW_SIZE, len(self.dropped_packets))
+        if packets_to_process == 0:
+            return
+            
+        retransmit_seq = self.dropped_packets[:packets_to_process]
         self.window = "RETRANSMIT "
+        
+        # Create a new list for packets that need to be re-added
+        still_dropped = []
+        
         for res_seq in retransmit_seq:
-            seq = ""
             if self.should_drop():
-                seq = f"dropped"
-                self.dropped_packets.append(res_seq)
+                seq = "dropped"
+                still_dropped.append(res_seq)  # Re-add to dropped list
             else:
                 seq = res_seq
-
+                # Successfully transmitted
+                
             self.window += f"{seq} "
-
-        self.dropped_packets = self.dropped_packets[4:]
-
-        print(f"{self.window}")
+        
+        # Remove the processed packets and add back any still-dropped ones
+        self.dropped_packets = self.dropped_packets[packets_to_process:] + still_dropped
+        
+        if len(self.window.split(" ")) > 1: 
+            print(f"{self.window}")
         self.socket.sendall(self.window.encode())
         self.window = ""
-
 
     def send_data(self):
         while self.total_packets_sent < self.TOTAL_PACKETS:
@@ -71,10 +81,13 @@ class Client:
                     seq = self.seq_num
 
                 self.window += f"{seq} "
-                self.seq_num = (self.seq_num + 1) % self.MAX_SEQ_NUM
+
+                self.seq_num = (self.seq_num + 1) 
+                if self.seq_num == self.MAX_SEQ_NUM:
+                    self.seq_num = 0
+                    self.wrap += 1
 
             self.socket.sendall(self.window.encode())
-
 
             try :
                 data = self.socket.recv(1024).decode().strip().split(" ")
@@ -90,16 +103,17 @@ class Client:
                 break
 
             self.total_packets_sent += self.WINDOW_SIZE
-            if self.total_packets_sent % 100 == 0:
+            if self.total_packets_sent % 1000 == 0:
                 self.handle_retransmit()
 
-            time.sleep(0.001)
+            # time.sleep(0.0001)
 
 
         print("All sequences sent successfully")
-        print(f"Dropped packets: {self.dropped_packets}")
+        print(f"Dropped packets length: {len(self.dropped_packets)}")
         rate = (self.total_packets_sent - len(self.dropped_packets)) / self.TOTAL_PACKETS * 100
         print(f"Success rate: {rate}%")
+        print(f"Wrap arounds: {self.wrap}")
         self.socket.close()
 
 if __name__ == "__main__":
