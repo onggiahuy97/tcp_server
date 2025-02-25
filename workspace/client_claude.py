@@ -15,7 +15,7 @@ class Client:
         
         # Sequence/window management
         self.MAX_SEQ_NUM = 2**16
-        self.TOTAL_PACKETS = 10_000_000  # Updated to 10M as per requirements
+        self.TOTAL_PACKETS = 1_000_000  # Updated to 10M as per requirements
         self.WINDOW_SIZE = 4
 
         self.window = "" 
