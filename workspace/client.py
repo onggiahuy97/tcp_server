@@ -15,7 +15,7 @@ class Client:
         
         # Sequence/window management
         self.MAX_SEQ_NUM = 2**16
-        self.TOTAL_PACKETS = 1_000_000
+        self.TOTAL_PACKETS = 100
         self.WINDOW_SIZE = 4
 
         self.window = "" 
@@ -54,6 +54,7 @@ class Client:
         return random.random() < 0.01
 
     def handle_retransmit(self):
+        print(f"Dropped packets: {self.dropped_packets}")
         # Process up to 4 dropped packets
         packets_to_process = min(self.WINDOW_SIZE, len(self.dropped_packets))
         if packets_to_process == 0:
@@ -86,6 +87,7 @@ class Client:
         if len(self.window.split(" ")) > 1: 
             print(f"{self.window}")
         self.socket.sendall(self.window.encode())
+        print(f"Retransmitted {packets_to_process} packets")
         self.window = ""
 
     def record_checkpoint(self):
@@ -172,6 +174,7 @@ class Client:
                 self.total_packets_sent += 1
 
             self.socket.sendall(self.window.encode())
+            print(f"{self.window}")
 
             try :
                 data = self.socket.recv(1024).decode().strip().split(" ")
@@ -187,7 +190,7 @@ class Client:
                 self.report_statistics()
 
             # Optional sleep to slow down sending
-            # time.sleep(0.0001)
+            time.sleep(0.01)
 
         print("CHECKEHCKJDKF")
         # Final restransmission to clean up

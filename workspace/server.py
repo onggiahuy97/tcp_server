@@ -98,6 +98,8 @@ class Server:
                     break
                     
                 message = data.decode().strip().split(" ")
+
+                print(f"Received: {message}")
                 
                 # Handle retransmissions differently
                 if message[0] == "RETRANSMIT":
@@ -142,7 +144,7 @@ class Server:
                     self.missing_packet_counts.append(len(self.missing_seq))
                     self.received_packet_counts.append(self.total_received)
 
-                    print(f"Checkpoint {last_checkpoint} - Recv: {self.total_received} - Missing: {len(self.missing_seq)}, Goodput: {goodput}")
+                    print(f"Recv: {self.total_received} - Missing: {len(self.missing_seq)}, Goodput: {goodput}")
             
             # Final statistics
             print(f"Total received: {self.total_received}")
