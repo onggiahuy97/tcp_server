@@ -1,1 +1,1 @@
-{"checkpoint_times": [0.3015110492706299], "window_sizes": [4], "sequence_received": [99], "sequence_dropped": [1], "retransmission_counts": [0, 0, 0, 0], "total_sent": 100, "total_acked": 99, "total_dropped": 1}
+{"checkpoint_times": [3.040228843688965, 3.35538387298584], "window_sizes": [4, 4], "sequence_received": [992, 1096], "sequence_dropped": [4, 4], "retransmission_counts": [4, 0, 0, 0], "total_sent": 1100, "total_acked": 1096, "total_dropped": 4}
