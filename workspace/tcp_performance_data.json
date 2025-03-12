@@ -1,1 +1,1 @@
-{"checkpoint_times": [10.0], "goodput_values": [95.0], "missing_packet_counts": [5], "received_packet_counts": [95], "total_received": 95, "total_missing": 5, "final_goodput": 95.0}
+{"checkpoint_times": [3.111992120742798], "goodput_values": [98.20717131474103], "missing_packet_counts": [14], "received_packet_counts": [986], "total_received": 986, "total_missing": 14, "final_goodput": 98.20717131474103}
