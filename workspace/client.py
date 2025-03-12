@@ -4,7 +4,7 @@ import random
 from typing import List, Dict
 import json
 
-SERVER_IP = "localhost"
+SERVER_IP = "10.0.0.150"
 SERVER_PORT = 8080
 
 class Client: 
@@ -174,7 +174,7 @@ class Client:
                 self.total_packets_sent += 1
 
             self.socket.sendall(self.window.encode())
-            print(f"{self.window}")
+            # print(f"{self.window}")
 
             try :
                 data = self.socket.recv(1024).decode().strip().split(" ")
@@ -188,6 +188,7 @@ class Client:
             if self.total_packets_sent % 1000 == 0:
                 self.handle_retransmit()
                 self.report_statistics()
+                print(f"Percent {self.total_packets_sent/self.TOTAL_PACKETS*100:.2f}%")
 
             # Optional sleep to slow down sending
             time.sleep(0.01)

@@ -1,1 +1,0 @@
-{"checkpoint_times": [3.0957601070404053, 3.1083872318267822], "window_sizes": [4, 4], "sequence_received": [982, 982], "sequence_dropped": [14, 14], "retransmission_counts": [4, 0, 0, 0], "total_sent": 1000, "total_acked": 982, "total_dropped": 14}

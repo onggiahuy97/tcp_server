@@ -6,9 +6,20 @@ from typing import Optional, List
 DEFAULT_PORT = 8080
 MAC_IP4_ADDR = "localhost"
 
+def get_local_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try: 
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+    except Exception:
+        ip = "localhost"
+    finally: 
+        s.close()
+    return ip
+
 class Server: 
     def __init__(self, host: str = '', port: int = DEFAULT_PORT):
-        self.host = host 
+        self.host = host if host else get_local_ip() 
         self.port = port 
         self.socket: Optional[socket.socket] = None 
         self.connection: Optional[socket.socket] = None 
@@ -34,7 +45,7 @@ class Server:
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.socket.bind((self.host, self.port))
         self.socket.listen(1)
-        print(f"Server listening on port {self.port}...")
+        print(f"Server listening on IP: {self.host} PORT: {self.port}...")
         
     def reset(self):
         self.expected_seq = 0
@@ -77,7 +88,7 @@ class Server:
             "total_received": self.total_received,
             "total_missing": len(self.missing_seq),
             "final_goodput": self.goodput_values[-1] if self.goodput_values else 0
-}
+        }
 
         with open("tcp_performance_data.json", "w") as f:
             json.dump(data, f)
