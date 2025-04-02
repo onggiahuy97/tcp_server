@@ -1,7 +1,7 @@
 import socket
 
 def main():
-    host = 'localhost'
+    host = '0.0.0.0'
     port = 5001
     missing_numbers = []  # list to record dropped sequence numbers
 

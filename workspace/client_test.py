@@ -11,7 +11,7 @@ def generate_block(start_seq, length=1000, drop_prob=0.01):
     return ''.join('0' if random.random() < drop_prob else '1' for _ in range(length))
 
 def main():
-    host = 'localhost'
+    host = '10.0.0.150'
     port = 5001
     start_seq = 1  # initial sequence number
 
@@ -48,7 +48,7 @@ def main():
                 start_seq = ack_seq
 
             # Optionally pause between blocks.
-            time.sleep(0.01)
+            time.sleep(0.001)
 
 if __name__ == '__main__':
     main()
