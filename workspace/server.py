@@ -19,7 +19,8 @@ def get_local_ip():
 
 class Server: 
     def __init__(self, host: str = '', port: int = DEFAULT_PORT):
-        self.host = host if host else get_local_ip() 
+        # self.host = host if host else get_local_ip() 
+        self.host = "localhost"
         self.port = port 
         self.socket: Optional[socket.socket] = None 
         self.connection: Optional[socket.socket] = None 
@@ -43,6 +44,12 @@ class Server:
         
     def start(self): 
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
+        # Disable Nagle's algorithm
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
         self.socket.bind((self.host, self.port))
         self.socket.listen(1)
         print(f"Server listening on IP: {self.host} PORT: {self.port}...")
@@ -110,7 +117,7 @@ class Server:
                     
                 message = data.decode().strip().split(" ")
 
-                print(f"Received: {message}")
+                # print(f"Received: {message}")
                 
                 # Handle retransmissions differently
                 if message[0] == "RETRANSMIT":
@@ -170,7 +177,7 @@ class Server:
                 self.missing_packet_counts.append(len(self.missing_seq))
                 self.received_packet_counts.append(self.total_received)
                 
-            self.save_performance_data()
+            # self.save_performance_data()
 
         except Exception as e: 
             print(f"Error receiving data: {e}")
@@ -180,7 +187,7 @@ class Server:
                 self.connection = None
 
 if __name__ == "__main__":
-    server = Server() 
+    server = Server(host='0.0.0.0') 
     server.start()
 
     while True: 

@@ -3,8 +3,9 @@ import time
 import random
 from typing import List, Dict
 import json
+import ssl
 
-SERVER_IP = "10.0.0.150"
+SERVER_IP = "localhost"
 SERVER_PORT = 8080
 
 class Client: 
@@ -12,11 +13,18 @@ class Client:
         self.server_ip = server_ip
         self.server_port = server_port
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        # Increase buffer size
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
+
+        # Disable Nagle's algorithm
+        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         
         # Sequence/window management
         self.MAX_SEQ_NUM = 2**16
-        self.TOTAL_PACKETS = 1000
-        self.WINDOW_SIZE = 4
+        self.TOTAL_PACKETS = 1_000_000
+        self.WINDOW_SIZE = 50
 
         self.window = "" 
         self.seq_num = 0
@@ -187,13 +195,12 @@ class Client:
             # Handle retransmissions every 1000 packets
             if self.total_packets_sent % 1000 == 0:
                 self.handle_retransmit()
-                self.report_statistics()
+                # self.report_statistics()
                 print(f"Percent {self.total_packets_sent/self.TOTAL_PACKETS*100:.2f}%")
 
             # Optional sleep to slow down sending
-            time.sleep(0.01)
+            time.sleep(0.001)
 
-        print("CHECKEHCKJDKF")
         # Final restransmission to clean up
         # while self.dropped_packets:
         #     self.handle_retransmit()
@@ -206,7 +213,7 @@ class Client:
         #
         #     self.record_checkpoint()
 
-        self.report_statistics(force=True)
+        # self.report_statistics(force=True)
 
         print("\nFinal Summary:")
         print("=" * 50)
@@ -231,7 +238,7 @@ class Client:
         for i in range(1, 5):
             print(f"Retransmissions of {i}: {retrans_stats[i]}")
 
-        self.save_performance_data()
+        # self.save_performance_data()
         self.socket.close()
 
 
