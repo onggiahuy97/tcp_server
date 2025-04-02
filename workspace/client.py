@@ -5,7 +5,7 @@ from typing import List, Dict
 import json
 import ssl
 
-SERVER_IP = "localhost"
+SERVER_IP = "10.0.0.150"
 SERVER_PORT = 8080
 
 class Client: 
