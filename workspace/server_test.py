@@ -1,20 +1,14 @@
 import socket
 import logging
-import threading
 
 class SequenceServer:
-    def __init__(self, host='0.0.0.0', port=5001, window_size=100, buffer_size=8192):
+    def __init__(self, host='0.0.0.0', port=5001, window_size=32, buffer_size=8192):
         self.host = host
         self.port = port
         self.window_size = window_size
         self.buffer_size = buffer_size  # Increased buffer size for better performance
         self.server = None
-        self.recv_log = set()
-        self.wrap_count = 0
         self.total_recv = 0 
-        self.last_seq = None
-        self.last_packet_id = None
-        self.expected_seq = 0
         self.missing_seqs = []
         self.max_seq = 2**16
         self.setup_logging()
@@ -30,14 +24,8 @@ class SequenceServer:
     
     def reset(self):
         """Reset tracking variables when client disconnects"""
-        self.recv_log.clear()
-        self.wrap_count = 0
         self.total_recv = 0
-        self.last_seq = None
-        self.last_packet_id = None
-        self.expected_seq = 0
         self.missing_seqs.clear()
-
         self.logger.info("Server state reset for new client")
     
     def setup(self):
@@ -69,17 +57,19 @@ class SequenceServer:
                 i += 1
             segment_end = i
             
-            # Find missing numbers in this segment
+            # Find missing numbers in this segment more efficiently
+            # By using set difference instead of loop
             segment = arr[segment_start:segment_end+1]
             start, end = segment[0], segment[-1]
+            expected = set(range(start, end + 1))
             segment_set = set(segment)
-            
-            missing.extend([num for num in range(start, end + 1) if num not in segment_set])
+            missing.extend(sorted(expected - segment_set))
             
             # Move to start of next segment
             i += 1
         
         return missing
+
 
     def process_client_data(self, data, conn):
         """Process received data and update tracking information"""
@@ -88,7 +78,6 @@ class SequenceServer:
 
             if decoded.startswith("r"):
                 seqs = list(map(int, filter(None, decoded.split(':')[1].split(','))))
-                print(seqs)
                 for seq in seqs:
                     self.total_recv += 1
                     if seq in self.missing_seqs:
@@ -103,12 +92,10 @@ class SequenceServer:
 
                 if self.total_recv % 1000 == 0:
                     goodput = (self.total_recv) / (self.total_recv + len(self.missing_seqs))
-                    self.logger.info(f"Goodput: {goodput:.4f}")
+                    self.logger.info(f"Recv: {self.total_recv} - Missing: {len(self.missing_seqs)} - Goodput: {goodput:.4f}")
 
-            for seq in missing:
-                self.missing_seqs.append(seq)
+            self.missing_seqs.extend(missing)
 
-                
         except Exception as e:
             self.logger.error(f"Error processing client data: {e}")
 
@@ -135,6 +122,7 @@ class SequenceServer:
         finally:
             conn.close()
             self.logger.info(f"Connection from {addr} closed")
+            self.logger.info(f"Total packets received: {self.total_recv}")
             self.logger.info(f"Missing numbers count: {len(self.missing_seqs)}")
             self.logger.info("=" * 40)
     
@@ -157,6 +145,4 @@ class SequenceServer:
 
 if __name__ == '__main__':
     server = SequenceServer()
-    # For multiple concurrent clients:
-    # server.run_threaded()
     server.run()

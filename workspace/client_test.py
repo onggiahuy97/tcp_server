@@ -2,20 +2,18 @@ import socket
 import random
 import time
 import logging
-import struct
-import threading
 
 class PacketClient:
     def __init__(self, 
                 # host="10.0.0.150", 
                 host="localhost",  # Local testing
                 port=5001, 
-                max_packets=100_000,  # Increased to 10M
+                max_packets=1_000_000,  # Increased to 10M
                 max_seq=2**16, 
-                window_size=100,  # Increased for throughput
+                window_size=200,  # Increased for throughput
                 drop_prob=0.01,
                 retry_delay=0.05,  # Reduced for speed
-                transmit_delay=0.001):  # Minimized delay
+                transmit_delay=0.005):  # Minimized delay
         self.host = host
         self.port = port
         self.max_packets = max_packets
@@ -73,36 +71,41 @@ class PacketClient:
         return ','.join(map(str, block))
     
     def retransmit_block(self):
-        if len(self.dropped) == 0:
+        if not self.dropped:
             return
 
-        to_retry = list(self.dropped)
-        to_retry = to_retry[:self.window_size]
         block = [] 
+        seqs = self.dropped[:self.window_size]
+        keep_dropped = []
 
-        for seq in to_retry:
+        for seq in seqs:
+            self.retransmission_counts[seq] += 1
+            retry_count = min(4, self.retransmission_counts[seq])
+            self.retransmissions[retry_count] += 1
+
             if random.random() <= self.drop_prob:
-                self.retransmission_counts[seq] += 1
-                self.retransmissions[self.retransmission_counts[seq]] += 1
-                self.dropped.append(seq)
-            else: 
+                # self.dropped.append(seq) 
+                keep_dropped.append(seq)
+            else:
                 block.append(seq)
-                self.dropped.remove(seq)
 
             self.total_sent += 1
+        
+        remaining_dropped = self.dropped[len(seqs):]
+        self.dropped = keep_dropped + remaining_dropped
 
-        block = "r:" + ','.join(map(str, block))
-
-        try:
-            self.socket.sendall(block.encode())
-        except Exception as e:
-            self.logger.error(f"Error during retransmission: {e}")
+        # Only proceed if we have sequences to transmit
+        if block:
+            block_str = "r:" + ','.join(map(str, block))
+            try:
+                self.socket.sendall(block_str.encode())
+                if self.transmit_delay > 0:
+                    time.sleep(self.transmit_delay)
+            except Exception as e:
+                self.logger.error(f"Error during retransmission: {e}")
 
     def handle_send_packets(self):
         block = self.generate_block()
-        if len(block) == 0: 
-            return
-
         try:
             self.socket.sendall(block.encode())
             # Only sleep if absolutely necessary - minimal delay
@@ -117,13 +120,14 @@ class PacketClient:
             
             while self.total_sent < self.max_packets:
                 self.handle_send_packets()
-                
+
                 if self.total_sent % 1000 == 0:
                     self.logger.info(f"Sent {self.total_sent} packets, Missing: {len(self.dropped)}")
-                    # self.retransmit_block()
                 
-            self.logger.info(f"Final missing sequence numbers: {len(self.dropped)}")
-            self.logger.info(f"Retransmission counts: {self.retransmissions}")
+            self.logger.info(f"Total packets sent: {self.total_sent}")
+            self.logger.info(f"Total packets dropped: {len(self.dropped)}")
+            self.logger.info(f"Packets retransmitted: {self.retransmissions}")
+            self.logger.info(f"Wrap around count: {self.wrap}")
                 
         except KeyboardInterrupt:
             self.logger.info("Client stopped by user")
