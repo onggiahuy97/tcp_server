@@ -134,7 +134,7 @@ class Server:
     def handle_client(self, conn, addr):
         """Handle a client connection"""
         self.logger.info(f"Connected by {addr}")
-        self.reset()
+        # self.reset()
         
         try:
             # Optimize TCP performance
@@ -167,7 +167,7 @@ class Server:
             self.logger.info(f"Connection from {addr} closed")
             self.logger.info(f"Total packets received: {self.total_recv}")
             self.logger.info(f"Missing numbers count: {len(self.missing_seqs)}")
-            self.stop_goodput_reporting()
+            # self.stop_goodput_reporting()
             self.logger.info("=" * 40)
     
     def run(self):
@@ -175,12 +175,16 @@ class Server:
         self.setup()
         
         try:
-            while True:
-                try:
-                    conn, addr = self.server.accept()
-                    self.handle_client(conn, addr)
-                except Exception as e:
-                    self.logger.error(f"Error accepting connection: {e}")
+            conn, addr = self.server.accept()
+            self.handle_client(conn, addr)
+        except Exception as e:
+            self.logger.error(f"Error accepting connection: {e}")
+            # while True:
+            #     try:
+            #         conn, addr = self.server.accept()
+            #         self.handle_client(conn, addr)
+            #     except Exception as e:
+            #         self.logger.error(f"Error accepting connection: {e}")
         except KeyboardInterrupt:
             self.logger.info("Server shutting down...")
         finally:
