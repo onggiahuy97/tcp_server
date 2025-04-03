@@ -19,11 +19,10 @@ class Server:
         self.goodput_thread = threading.Thread(target=self.goodput_timer, daemon=True)
         self.goodput_thread.start()
         self.setup_logging()
-        self.reset()
 
     def goodput_timer(self):
         while not self.stop_goodput_timer:
-            time.sleep(5)
+            time.sleep(1)
             self.print_goodput()
     
     def setup_logging(self):
@@ -33,22 +32,6 @@ class Server:
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
         self.logger = logging.getLogger(__name__)
-    
-    def reset(self):
-        """Reset tracking variables when client disconnects"""
-        self.total_recv = 0
-        self.last_ack = 0
-        self.missing_seqs.clear()
-
-        self.stop_goodput_timer = True 
-        if hasattr(self, 'goodput_thread') and self.goodput_thread.is_alive():
-            self.goodput_thread.join(timeout=1)
-
-        self.stop_goodput_timer = False 
-        self.goodput_thread = threading.Thread(target=self.goodput_timer, daemon=True)
-        self.goodput_thread.start()
-
-        self.logger.info("Server state reset for new client")
     
     def setup(self):
         """Set up and initialize the socket server"""
@@ -64,9 +47,6 @@ class Server:
             self.logger.error(f"Socket setup error: {e}")
             raise
 
-    def find_missing_numbers(self, arr):
-        pass
-
     def print_goodput(self):
         if self.total_recv == 0:
             return
@@ -75,22 +55,66 @@ class Server:
 
     def process_client_data(self, data, conn):
         """Process received data and update tracking information"""
-        data = data.decode().split(":")
-        start = int(data[0])
-        binary = data[1]
-        # self.logger.info(f"{start:<5}:{binary}")
-        count = 0
+        try:
+            # Add validation for data format
+            decoded_data = data.decode()
+            if ":" not in decoded_data:
+                self.logger.error(f"Malformed data received: {decoded_data}")
+                conn.send(f"{self.last_ack}".encode())
+                return
+                
+            data = decoded_data.split(":")
+            if len(data) < 2:
+                self.logger.error(f"Split data has insufficient parts: {data}")
+                conn.send(f"{self.last_ack}".encode())
+                return
+                
+            start = int(data[0])
+            binary = data[1]
+            count = 0
 
-        for b in binary:
-            if b == '1':
-                self.last_ack = (start + count) % self.max_seq
-                self.total_recv += 1
-            elif b == '0':
-                self.missing_seqs.append(start + count)
+            for b in binary:
+                seq = (start + count) % self.max_seq
 
-            count += 1
+                if b == '1':
+                    self.last_ack = seq       
+                    self.total_recv += 1
+                elif b == '0':
+                    self.missing_seqs.append(seq)
+                else:
+                    self.logger.warning(f"Unexpected character in binary string: {b}")
+                count += 1
 
-        conn.send(f"{self.last_ack}".encode())
+            conn.send(f"{self.last_ack}".encode())
+
+        except Exception as e:
+            self.logger.error(f"Error processing client data: {e}")
+            # Send last known ack to keep connection alive
+            conn.send(f"{self.last_ack}".encode())
+
+    def process_client_retransmission(self, data, conn):
+        try:
+            binary_data = data[1:]
+            if not binary_data:
+                self.logger.warning("Received empty retransmission data")
+                return
+                
+            n = len(binary_data) // 2 
+            if n > 0:
+                try:
+                    actual_data = binary_data[:n*2]
+                    seqs = struct.unpack(f"!{n}H", actual_data)
+                    self.total_recv += len(seqs)
+                    for seq in seqs:
+                        if seq in self.missing_seqs:
+                            self.missing_seqs.remove(seq)
+                except struct.error as e:
+                    self.logger.error(f"Unpacking error: {e}")
+                    self.logger.debug(f"Raw data: {binary_data.hex()}")
+            else:
+                self.logger.warning("Received empty retransmission request")
+        except Exception as e:
+            self.logger.error(f"Error processing retransmission: {e}")
 
     def handshake(self, data, conn):
         """Perform handshake with the client"""
@@ -99,23 +123,6 @@ class Server:
             conn.send(b'success\n')
             return True 
         return False
-
-    def process_client_retransmission(self, data, conn):
-        binary_data = data[1:]
-        n = len(binary_data) // 2 
-        if n > 0:
-            try:
-                actual_data = binary_data[:n*2]
-                seqs = struct.unpack(f"!{n}H", actual_data)
-                self.total_recv += len(seqs)
-                for seq in seqs:
-                    if seq in self.missing_seqs:
-                        self.missing_seqs.remove(seq)
-            except struct.error as e:
-                self.logger.error(f"Unpacking error: {e}")
-                self.logger.debug(f"Raw data: {binary_data.hex()}")
-        else:
-            self.logger.warning("Recv empty retransmission request")
 
     def stop_goodput_reporting(self):
         """Stop the goodput reporting thread"""
@@ -134,7 +141,6 @@ class Server:
     def handle_client(self, conn, addr):
         """Handle a client connection"""
         self.logger.info(f"Connected by {addr}")
-        # self.reset()
         
         try:
             # Optimize TCP performance
@@ -179,12 +185,7 @@ class Server:
             self.handle_client(conn, addr)
         except Exception as e:
             self.logger.error(f"Error accepting connection: {e}")
-            # while True:
-            #     try:
-            #         conn, addr = self.server.accept()
-            #         self.handle_client(conn, addr)
-            #     except Exception as e:
-            #         self.logger.error(f"Error accepting connection: {e}")
+
         except KeyboardInterrupt:
             self.logger.info("Server shutting down...")
         finally:
