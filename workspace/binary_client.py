@@ -2,15 +2,17 @@ import socket
 import random
 import time
 import logging
+from typing import Optional
+import struct
 
 class PacketClient:
     def __init__(self, 
                 # host="10.0.0.150", 
                 host="localhost",  # Local testing
                 port=5001, 
-                max_packets=1_000_000,  # Increased to 10M
+                max_packets= 100_000,  # Increased to 10M
                 max_seq=2**16, 
-                window_size=50,  # Increased for throughput
+                window_size=100,  # Increased for throughput
                 drop_prob=0.01,
                 retry_delay=0.05,  # Reduced for speed
                 transmit_delay=0.05):  # Minimized delay
@@ -75,28 +77,52 @@ class PacketClient:
 
         self.total_sent += self.window_size
         self.socket.send(block.encode())
-        time.sleep(0.001)
+        time.sleep(self.transmit_delay)
         ack = int(self.socket.recv(8).decode())
         self.wrap += 1 if self.last_ack > ack else 0
         self.last_ack = ack
 
-        self.logger.info(f"Last Ack: {self.last_ack}")
+        self.logger.info(f"Last Ack: {self.last_ack} - Total sent: {self.total_sent}")
 
-    def retransmit_block(self):
-        pass
+    def handle_retransmit(self):
+        seqs = self.dropped[:self.window_size]
+        block = []
+        keep_drop = []
+        for seq in seqs:
+            if self.should_drop():
+                keep_drop.append(seq)
+            else:
+                block.append(seq) 
+
+        self.total_sent += len(seqs)
+        self.dropped = self.dropped[self.window_size:]        
+        self.dropped.extend(keep_drop)
+
+        if block:
+            binary_data = struct.pack(f"!{len(block)}H", *block)
+            self.socket.send(b"R" + binary_data)
+            time.sleep(self.transmit_delay)
+            self.logger.info(f"Retransmitting {len(block)} sequences")
+
 
     def run(self):
         try:
             if self.connect():
                 self.logger.info("Handshake established")
+
                 while self.total_sent < self.max_packets:
                     self.handle_transmit()
+
+                    # if self.total_sent % 1000 == 0 and self.dropped:
+                    #     self.handle_retransmit()
+                    
             else:
                 self.logger.info("Handshake failed")
 
-            self.socket.send(f"finished".encode())
+            self.socket.send(b"F")
             self.logger.info("Finished")
             self.logger.info(f"Total sent: {self.total_sent} - total missing: {len(self.dropped)} - total wrap: {self.wrap}")
+            # self.logger.info(self.dropped)
                 
         except KeyboardInterrupt:
             self.logger.info("Client stopped by user")
