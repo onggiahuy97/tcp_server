@@ -1,20 +1,27 @@
 import socket
 import logging
 import threading
-import struct
 
 class SequenceServer:
-    def __init__(self, host='0.0.0.0', port=5001, window_size=1000, buffer_size=65536):
+    def __init__(self, host='0.0.0.0', port=5001, window_size=100, buffer_size=8192):
         self.host = host
         self.port = port
         self.window_size = window_size
-        self.buffer_size = buffer_size  # Increased for better throughput
+        self.buffer_size = buffer_size  # Increased buffer size for better performance
         self.server = None
+        self.recv_log = set()
+        self.wrap_count = 0
+        self.total_recv = 0 
+        self.last_seq = None
+        self.last_packet_id = None
+        self.expected_seq = 0
+        self.missing_seqs = []
+        self.max_seq = 2**16
         self.setup_logging()
         self.reset()
-        self.ack_frequency = 500  # Send ACK every N packets
     
     def setup_logging(self):
+        """Set up consistent logging configuration"""
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s'
@@ -22,82 +29,104 @@ class SequenceServer:
         self.logger = logging.getLogger(__name__)
     
     def reset(self):
+        """Reset tracking variables when client disconnects"""
+        self.recv_log.clear()
+        self.wrap_count = 0
         self.total_recv = 0
-        self.missing_numbers = set()
-        self.current_seq = 0
+        self.last_seq = None
+        self.last_packet_id = None
+        self.expected_seq = 0
+        self.missing_seqs.clear()
+
         self.logger.info("Server state reset for new client")
     
     def setup(self):
+        """Set up and initialize the socket server"""
         try:
             self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)  # 1MB receive buffer
-            self.server.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Disable Nagle
+            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # Keep connections alive
+            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
             self.server.bind((self.host, self.port))
-            self.server.listen(5)  # Increased backlog
+            self.server.listen(1)  # Allow backlog of connections
             self.logger.info(f"Server listening on {self.host}:{self.port}")
         except OSError as e:
             self.logger.error(f"Socket setup error: {e}")
             raise
-    
+
+    def find_missing_numbers(self, arr):
+        if not arr:
+            return []
+        
+        missing = []
+        
+        # Process each sorted segment
+        i = 0
+        while i < len(arr):
+            # Find the end of current sorted segment
+            segment_start = i
+            while i + 1 < len(arr) and arr[i] < arr[i+1]:
+                i += 1
+            segment_end = i
+            
+            # Find missing numbers in this segment
+            segment = arr[segment_start:segment_end+1]
+            start, end = segment[0], segment[-1]
+            segment_set = set(segment)
+            
+            missing.extend([num for num in range(start, end + 1) if num not in segment_set])
+            
+            # Move to start of next segment
+            i += 1
+        
+        return missing
+
     def process_client_data(self, data, conn):
-        """Process received data and update tracking, sending ACKs when needed"""
+        """Process received data and update tracking information"""
         try:
             decoded = data.decode()
-            seqs = [seq for seq in decoded.split(",") if seq]
-            
-            needs_ack = False
-            
+
+            if decoded.startswith("r"):
+                seqs = list(map(int, filter(None, decoded.split(':')[1].split(','))))
+                print(seqs)
+                for seq in seqs:
+                    self.total_recv += 1
+                    if seq in self.missing_seqs:
+                        self.missing_seqs.remove(seq)
+                return
+
+            seqs = list(map(int, filter(None, decoded.split(','))))
+            missing = self.find_missing_numbers(seqs)
+
             for seq in seqs:
-                if seq.startswith('-'):
-                    # Negative number indicates packet drop
-                    try:
-                        s = int(seq[1:])
-                        self.missing_numbers.add(s)
-                    except ValueError:
-                        continue
-                else:
-                    try:
-                        s = int(seq)
-                        if s in self.missing_numbers:
-                            self.missing_numbers.remove(s)
-                    except ValueError:
-                        continue
-                
                 self.total_recv += 1
+
+                if self.total_recv % 1000 == 0:
+                    goodput = (self.total_recv) / (self.total_recv + len(self.missing_seqs))
+                    self.logger.info(f"Goodput: {goodput:.4f}")
+
+            for seq in missing:
+                self.missing_seqs.append(seq)
+
                 
-                # Send ACK periodically
-                if self.total_recv % self.ack_frequency == 0:
-                    needs_ack = True
-            
-            # Send acknowledgment
-            if needs_ack:
-                try:
-                    # Simple integer ACK - just send the count
-                    ack_data = struct.pack("!Q", self.total_recv)
-                    conn.sendall(ack_data)
-                except Exception as e:
-                    self.logger.error(f"Error sending ACK: {e}")
-
-            if self.total_recv % 100000 == 0:
-                self.logger.info(f"Received: {self.total_recv} packets, Missing: {len(self.missing_numbers)}")
-
         except Exception as e:
             self.logger.error(f"Error processing client data: {e}")
+
     
     def handle_client(self, conn, addr):
+        """Handle a client connection"""
         self.logger.info(f"Connected by {addr}")
         self.reset()
         
         try:
+            # Optimize TCP performance
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)  # 1MB send buffer
             
             while True:
                 data = conn.recv(self.buffer_size)
                 if not data:
+                    self.logger.info("Client disconnected")
                     break
-                
                 self.process_client_data(data, conn)
         except ConnectionResetError:
             self.logger.warning(f"Connection reset by {addr}")
@@ -106,34 +135,20 @@ class SequenceServer:
         finally:
             conn.close()
             self.logger.info(f"Connection from {addr} closed")
-            self.logger.info(f"Missing numbers count: {len(self.missing_numbers)}")
+            self.logger.info(f"Missing numbers count: {len(self.missing_seqs)}")
             self.logger.info("=" * 40)
     
-    def run_threaded(self):
-        self.setup()
-        
-        try:
-            while True:
-                conn, addr = self.server.accept()
-                client_thread = threading.Thread(
-                    target=self.handle_client,
-                    args=(conn, addr)
-                )
-                client_thread.daemon = True
-                client_thread.start()
-        except KeyboardInterrupt:
-            self.logger.info("Server shutting down...")
-        finally:
-            if self.server:
-                self.server.close()
-    
     def run(self):
+        """Run server in single-client mode"""
         self.setup()
         
         try:
             while True:
-                conn, addr = self.server.accept()
-                self.handle_client(conn, addr)
+                try:
+                    conn, addr = self.server.accept()
+                    self.handle_client(conn, addr)
+                except Exception as e:
+                    self.logger.error(f"Error accepting connection: {e}")
         except KeyboardInterrupt:
             self.logger.info("Server shutting down...")
         finally:
@@ -142,4 +157,6 @@ class SequenceServer:
 
 if __name__ == '__main__':
     server = SequenceServer()
-    server.run_threaded()  # Changed to threaded mode by default
+    # For multiple concurrent clients:
+    # server.run_threaded()
+    server.run()
