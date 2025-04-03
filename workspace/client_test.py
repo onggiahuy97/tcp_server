@@ -5,15 +5,15 @@ import logging
 
 class PacketClient:
     def __init__(self, 
-                # host="10.0.0.150", 
-                host="localhost",  # Local testing
+                host="10.0.0.150", 
+                # host="localhost",  # Local testing
                 port=5001, 
                 max_packets=1_000_000,  # Increased to 10M
                 max_seq=2**16, 
-                window_size=50,  # Increased for throughput
+                window_size=200,  # Increased for throughput
                 drop_prob=0.01,
                 retry_delay=0.05,  # Reduced for speed
-                transmit_delay=0.001):  # Minimized delay
+                transmit_delay=0.05):  # Minimized delay
         self.host = host
         self.port = port
         self.max_packets = max_packets
