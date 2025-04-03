@@ -69,6 +69,9 @@ class SequenceServer:
             i += 1
         
         return missing
+    def print_goodput(self):
+        goodput = (self.total_recv) / (self.total_recv + len(self.missing_seqs))
+        self.logger.info(f"Recv: {self.total_recv} - Missing: {len(self.missing_seqs)} - Goodput: {goodput:.4f}")
 
 
     def process_client_data(self, data, conn):
@@ -80,6 +83,10 @@ class SequenceServer:
                 seqs = list(map(int, filter(None, decoded.split(':')[1].split(','))))
                 for seq in seqs:
                     self.total_recv += 1
+
+                    if self.total_recv % 1000 == 0:
+                        self.print_goodput()
+
                     if seq in self.missing_seqs:
                         self.missing_seqs.remove(seq)
                 return
@@ -91,8 +98,7 @@ class SequenceServer:
                 self.total_recv += 1
 
                 if self.total_recv % 1000 == 0:
-                    goodput = (self.total_recv) / (self.total_recv + len(self.missing_seqs))
-                    self.logger.info(f"Recv: {self.total_recv} - Missing: {len(self.missing_seqs)} - Goodput: {goodput:.4f}")
+                    self.print_goodput()
 
             self.missing_seqs.extend(missing)
 
