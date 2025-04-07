@@ -12,7 +12,7 @@ class PacketClient:
                 port=5001, 
                 max_packets= 10_000_000,  # Increased to 10M
                 max_seq=2**16, 
-                window_size=100,  # Increased for throughput
+                window_size=500,  # Increased for throughput
                 drop_prob=0.01,
                 transmit_delay=0.001):  # Minimized delay
         self.host = host
@@ -29,7 +29,7 @@ class PacketClient:
         self.wrap = 0
         self.last_ack = -1
         self.last_retransmit_time = time.time()
-        self.retransmit_interval = 1.0
+        self.retransmit_interval = 2.0
         self.retransmissions = {1: 0, 2: 0, 3: 0, 4: 0}
         self.retransmission_counts = [0] * max_seq
         

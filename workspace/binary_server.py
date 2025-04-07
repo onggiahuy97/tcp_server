@@ -15,6 +15,8 @@ class Server:
         self.missing_seqs = []
         self.max_seq = 2**16
         self.last_ack = 0
+        self.start_time = time.time()
+        self.seqs_over_time = []
         self.stop_goodput_timer = False
         self.goodput_thread = threading.Thread(target=self.goodput_timer, daemon=True)
         self.goodput_thread.start()
@@ -23,6 +25,7 @@ class Server:
     def goodput_timer(self):
         while not self.stop_goodput_timer:
             time.sleep(1)
+            self.record_data()
             self.print_goodput()
     
     def setup_logging(self):
@@ -46,6 +49,16 @@ class Server:
         except OSError as e:
             self.logger.error(f"Socket setup error: {e}")
             raise
+
+    def record_data(self):
+        current_time = time.time() - self.start_time
+        goodput = (self.total_recv) / (self.total_recv + len(self.missing_seqs)) if self.total_recv > 0 else 0
+        self.seqs_over_time.append({
+            'timestamp': current_time,
+            'received': self.total_recv,
+            'missing': len(self.missing_seqs),
+            'goodput': goodput
+        })
 
     def print_goodput(self):
         if self.total_recv == 0:
@@ -137,6 +150,29 @@ class Server:
         self.goodput_thread = None
         
         self.logger.info("Goodput reporting stopped")
+    
+    def save_seq_data_to_file(self):
+        """Save the sequence data to a CSV file"""
+        try:
+            import csv
+            from datetime import datetime
+            
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"sequence_data_{timestamp}.csv"
+            
+            self.logger.info(f"Saving sequence data to {filename}")
+            
+            with open(filename, 'w', newline='') as csvfile:
+                fieldnames = ['timestamp', 'received', 'missing', 'goodput']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                
+                writer.writeheader()
+                for data_point in self.seqs_over_time:
+                    writer.writerow(data_point)
+                    
+            self.logger.info(f"Successfully saved {len(self.seqs_over_time)} data points")
+        except Exception as e:
+            self.logger.error(f"Error saving sequence data: {e}")
 
     def handle_client(self, conn, addr):
         """Handle a client connection"""
@@ -173,7 +209,7 @@ class Server:
             self.logger.info(f"Connection from {addr} closed")
             self.logger.info(f"Total packets received: {self.total_recv}")
             self.logger.info(f"Missing numbers count: {len(self.missing_seqs)}")
-            # self.stop_goodput_reporting()
+            self.save_seq_data_to_file()
             self.logger.info("=" * 40)
     
     def run(self):
