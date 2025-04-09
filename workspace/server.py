@@ -1,199 +1,237 @@
-import json
 import socket
+import logging
+import struct
+import threading
 import time
-from typing import Optional, List 
 
-DEFAULT_PORT = 8080
-MAC_IP4_ADDR = "localhost"
-
-def get_local_ip():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try: 
-        s.connect(('8.8.8.8', 80))
-        ip = s.getsockname()[0]
-    except Exception:
-        ip = "localhost"
-    finally: 
-        s.close()
-    return ip
-
-class Server: 
-    def __init__(self, host: str = '', port: int = DEFAULT_PORT):
-        # self.host = host if host else get_local_ip() 
-        self.host = "localhost"
-        self.port = port 
-        self.socket: Optional[socket.socket] = None 
-        self.connection: Optional[socket.socket] = None 
-        
-        self.MAX_SEQ_NUM = 2**16
-        self.WINDOW_SIZE = 4
-        self.expected_seq = 0 
-        self.last_ack = -1
-        self.missing_seq: List[int] = []
-        self.retransmit_seq: List[int] = []
-        self.total_received = 0
-        self.total_missing = 0
-
-        # Data collection for graphs 
-        self.start_time = 0 
-        self.performance_data = [] 
-        self.checkpoint_times = [] 
-        self.goodput_values = [] 
-        self.missing_packet_counts = [] 
-        self.received_packet_counts = []
-        
-    def start(self): 
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
-        # Disable Nagle's algorithm
-        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-
-        self.socket.bind((self.host, self.port))
-        self.socket.listen(1)
-        print(f"Server listening on IP: {self.host} PORT: {self.port}...")
-        
-    def reset(self):
-        self.expected_seq = 0
-        self.last_ack = -1
-        self.missing_seq = []
-        self.total_received = 0
-        self.total_missing = 0
+class Server:
+    def __init__(self, host='0.0.0.0', port=5001, window_size=500, buffer_size=8192):
+        self.host = host
+        self.port = port
+        self.window_size = window_size
+        self.buffer_size = buffer_size  # Increased buffer size for better performance
+        self.server = None
+        self.total_recv = 0 
+        self.missing_seqs = []
+        self.max_seq = 2**16
+        self.last_ack = 0
         self.start_time = time.time()
-        self.performance_data = [] 
-        self.checkpoint_times = [] 
-        self.goodput_values = [] 
-        self.missing_packet_counts = [] 
-        self.received_packet_counts = [] 
-    
-    def accept_connection(self) -> bool: 
-        if self.socket == None: 
-            print(f"Error: Server socket is not init")
-            return False 
+        self.seqs_over_time = []
+        self.stop_goodput_timer = False
+        self.goodput_thread = threading.Thread(target=self.goodput_timer, daemon=True)
+        self.goodput_thread.start()
+        self.setup_logging()
+
+    @staticmethod
+    def get_ip_address():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            self.reset()
-            self.connection, addr = self.socket.accept()
-            print(f"Accept connection from: {addr}")
-            handshake = self.connection.recv(1024).decode().strip() 
-            if handshake != "network":
-                print(f"Handshake failed. Expected 'network', got: {handshake}")
-                return False 
-            self.connection.sendall(b"success\n")
-            return True
-        except Exception as e: 
-            print(f"Connection error during handshake: {e}")
-            return False 
+            # Doesn't need to be reachable
+            s.connect(('10.255.255.255', 1))
+            ip = s.getsockname()[0]
+        except Exception:
+            ip = '127.0.0.1'
+        finally:
+            s.close()
+        return ip
+
+    def goodput_timer(self):
+        while not self.stop_goodput_timer:
+            time.sleep(2)
+            self.record_data()
+            self.print_goodput()
     
+    def setup_logging(self):
+        """Set up consistent logging configuration"""
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
+    
+    def setup(self):
+        """Set up and initialize the socket server"""
+        try:
+            self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)  # Keep connections alive
+            self.server.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
+            self.server.bind((self.host, self.port))
+            self.server.listen(1)  # Allow backlog of connections
+            self.logger.info(f"Server listening on {self.host}:{self.port}")
+        except OSError as e:
+            self.logger.error(f"Socket setup error: {e}")
+            raise
 
-    def save_performance_data(self): 
-        data = {
-            "checkpoint_times": self.checkpoint_times,
-            "goodput_values": self.goodput_values,
-            "missing_packet_counts": self.missing_packet_counts,
-            "received_packet_counts": self.received_packet_counts,
-            "total_received": self.total_received,
-            "total_missing": len(self.missing_seq),
-            "final_goodput": self.goodput_values[-1] if self.goodput_values else 0
-        }
+    def record_data(self):
+        current_time = time.time() - self.start_time
+        goodput = (self.total_recv) / (self.total_recv + len(self.missing_seqs)) if self.total_recv > 0 else 0
+        self.seqs_over_time.append({
+            'timestamp': current_time,
+            'window_size': self.window_size,
+            'received': self.total_recv - len(self.missing_seqs),
+            'sent': self.total_recv,
+            'missing': len(self.missing_seqs),
+            'goodput': goodput
+        })
 
-        with open("tcp_performance_data.json", "w") as f:
-            json.dump(data, f)
-        print("Performance data saved to tcp_performance_data.json")
-
-    def run(self): 
-        if self.connection == None: 
-            print(f"Error: No active connection")
+    def print_goodput(self):
+        if self.total_recv == 0:
             return
-        try: 
-            self.start_time = time.time() 
-            last_checkpoint = 0 
+        goodput = (self.total_recv) / (self.total_recv + len(self.missing_seqs))
+        self.logger.info(f"Recv: {self.total_recv} - Missing: {len(self.missing_seqs)} - Goodput: {goodput:.4f}")
 
-            while True: 
-
-                data = self.connection.recv(1024)
-                if not data: 
-                    break
-                    
-                message = data.decode().strip().split(" ")
-
-                # print(f"Received: {message}")
+    def process_client_data(self, data, conn):
+        """Process received data and update tracking information"""
+        try:
+            # Add validation for data format
+            decoded_data = data.decode()
+            if ":" not in decoded_data:
+                self.logger.error(f"Malformed data received: {decoded_data}")
+                conn.send(f"{self.last_ack}".encode())
+                return
                 
-                # Handle retransmissions differently
-                if message[0] == "RETRANSMIT":
-                    for seq in message[1:]:
-                        if seq != "dropped" and int(seq) in self.missing_seq: 
-                            self.missing_seq.remove(int(seq))
-                            self.total_received += 1
-                    # print(f"Retransmitting: {message[1:]}")
-                    continue
+            data = decoded_data.split(":")
+            if len(data) < 2:
+                self.logger.error(f"Split data has insufficient parts: {data}")
+                conn.send(f"{self.last_ack}".encode())
+                return
                 
-                # Track current expected sequence in the window
-                current_seq = self.expected_seq
-                
-                # Process regular window packet by packet
-                for seq in message:
-                    if seq != "dropped":
-                        seq_num = int(seq)
-                        self.last_ack = seq_num
-                        self.total_received += 1
-                        current_seq = (seq_num + 1) % self.MAX_SEQ_NUM
-                    else:
-                        # Mark the current expected sequence as missing
-                        self.missing_seq.append(current_seq)
-                        self.total_missing += 1
-                        current_seq = (current_seq + 1) % self.MAX_SEQ_NUM
-                
-                # Update expected sequence for next window
-                self.expected_seq = (self.last_ack + 1) % self.MAX_SEQ_NUM
-                
-                # Send ACK for the last valid sequence received
-                self.connection.sendall(str(f"ACK {self.last_ack}").encode())
+            start = int(data[0])
+            binary = data[1]
+            self.window_size = len(binary)
+            count = 0
 
-                # Collect performance data every 1000 packets 
-                if self.total_received // 1000 > last_checkpoint:
-                    last_checkpoint = (self.total_received / (self.total_received + len(self.missing_seq))) * 100
-                    current_time = time.time() - self.start_time
+            for b in binary:
+                seq = (start + count) % self.max_seq
 
-                    goodput = (self.total_received / (self.total_received + len(self.missing_seq))) * 100 
-                    
-                    self.checkpoint_times.append(current_time)
-                    self.goodput_values.append(goodput)
-                    self.missing_packet_counts.append(len(self.missing_seq))
-                    self.received_packet_counts.append(self.total_received)
+                if b == '1':
+                    self.last_ack = seq       
+                    self.total_recv += 1
+                elif b == '0':
+                    self.missing_seqs.append(seq)
+                else:
+                    self.logger.warning(f"Unexpected character in binary string: {b}")
+                count += 1
 
-                    print(f"Recv: {self.total_received} - Missing: {len(self.missing_seq)}, Goodput: {goodput}")
+            conn.send(f"{self.last_ack}".encode())
+
+        except Exception as e:
+            self.logger.error(f"Error processing client data: {e}")
+            # Send last known ack to keep connection alive
+            conn.send(f"{self.last_ack}".encode())
+
+    def process_client_retransmission(self, data, conn):
+        try:
+            binary_data = data[1:]
+            if not binary_data:
+                self.logger.warning("Received empty retransmission data")
+                return
+                
+            n = len(binary_data) // 2 
+            if n > 0:
+                try:
+                    actual_data = binary_data[:n*2]
+                    seqs = struct.unpack(f"!{n}H", actual_data)
+                    self.total_recv += len(seqs)
+                    for seq in seqs:
+                        if seq in self.missing_seqs:
+                            self.missing_seqs.remove(seq)
+                except struct.error as e:
+                    self.logger.error(f"Unpacking error: {e}")
+                    self.logger.debug(f"Raw data: {binary_data.hex()}")
+            else:
+                self.logger.warning("Received empty retransmission request")
+        except Exception as e:
+            self.logger.error(f"Error processing retransmission: {e}")
+
+    def handshake(self, data, conn):
+        """Perform handshake with the client"""
+        data = data.decode().strip()  # Fixed decoding
+        if data == 'network':
+            conn.send(b'success\n')
+            return True 
+        return False
+
+    def save_seq_data_to_file(self):
+        """Save the sequence data to a CSV file"""
+        try:
+            import csv
+            from datetime import datetime
             
-            # Final statistics
-            print(f"Total received: {self.total_received}")
-            print(f"Missing seq length: {len(self.missing_seq)}")
-            if self.total_received > 0:
-                goodput = self.total_received / (self.total_received + self.total_missing) * 100
-                print(f"Final goodput: {goodput:.2f}%")
-
-                current_time = time.time() - self.start_time
-                self.checkpoint_times.append(current_time)
-                self.goodput_values.append(goodput)
-                self.missing_packet_counts.append(len(self.missing_seq))
-                self.received_packet_counts.append(self.total_received)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"sequence_data_{timestamp}.csv"
+            
+            self.logger.info(f"Saving sequence data to {filename}")
+            
+            with open(filename, 'w', newline='') as csvfile:
+                fieldnames = ['timestamp', 'window_size', 'received', 'sent', 'missing', 'goodput']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 
-            # self.save_performance_data()
+                writer.writeheader()
+                for data_point in self.seqs_over_time:
+                    writer.writerow(data_point)
+                    
+            self.logger.info(f"Successfully saved {len(self.seqs_over_time)} data points")
+        except Exception as e:
+            self.logger.error(f"Error saving sequence data: {e}")
 
-        except Exception as e: 
-            print(f"Error receiving data: {e}")
-        finally: 
-            if self.connection:
-                self.connection.close()
-                self.connection = None
+    def handle_client(self, conn, addr):
+        """Handle a client connection"""
+        self.logger.info(f"Connected by {addr}")
+        
+        try:
+            # Optimize TCP performance
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            data = conn.recv(8)
+            if self.handshake(data, conn):  # Pass data and conn to handshake
+                self.logger.info("Handshake success")
+                while True: 
+                    data = conn.recv(1024)
 
-if __name__ == "__main__":
-    server = Server(host='0.0.0.0') 
-    server.start()
-
-    while True: 
-        if server.accept_connection(): 
-            server.run()
-
+                    if data[0] == ord('R'):
+                        self.process_client_retransmission(data, conn)
+                        continue
+                    if data[0] == ord('F'):
+                        self.logger.info("Finished")
+                        break
 
 
+                    self.process_client_data(data,conn)
+            else:
+                self.logger.warning("Handshake failed")
+                return  # Exit early if handshake fails
+            
+        except ConnectionResetError:
+            self.logger.warning(f"Connection reset by {addr}")
+        except Exception as e:
+            self.logger.error(f"Connection error: {e}")
+        finally:
+            conn.close()
+            self.logger.info(f"Connection from {addr} closed")
+            self.logger.info(f"Total packets received: {self.total_recv}")
+            self.logger.info(f"Missing numbers count: {len(self.missing_seqs)}")
+            self.save_seq_data_to_file()
+            self.logger.info("=" * 40)
+    
+    def run(self):
+        """Run server in single-client mode"""
+        self.logger.info(f"Server IP address: {self.get_ip_address()}")
 
+        self.setup()
+        
+        try:
+            conn, addr = self.server.accept()
+            self.handle_client(conn, addr)
+        except Exception as e:
+            self.logger.error(f"Error accepting connection: {e}")
+
+        except KeyboardInterrupt:
+            self.logger.info("Server shutting down...")
+        finally:
+            if self.server:
+                self.server.close()
+
+if __name__ == '__main__':
+    server = Server()
+    server.run()

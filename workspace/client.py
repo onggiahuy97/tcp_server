@@ -1,248 +1,197 @@
-import socket 
-import time 
+import socket
 import random
-from typing import List, Dict
-import json
-import ssl
+import time
+import logging
+from typing import Optional
+import struct
 
-SERVER_IP = "10.0.0.150"
-SERVER_PORT = 8080
+class PacketClient:
+    def __init__(self, 
+                # host="10.0.0.150", 
+                host="localhost",  # Local testing
+                port=5001, 
+                max_packets= 10_000_000,  # Increased to 10M
+                max_seq=2**16, 
+                window_size=500,  # Increased for throughput
+                drop_prob=0.01,
+                transmit_delay=0.01):  # Minimized delay
 
-class Client: 
-    def __init__(self, server_ip: str, server_port: int):
-        self.server_ip = server_ip
-        self.server_port = server_port
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
-        # Increase buffer size
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)
-
-        # Disable Nagle's algorithm
-        self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        
-        # Sequence/window management
-        self.MAX_SEQ_NUM = 2**16
-        self.TOTAL_PACKETS = 1_000_000
-        self.WINDOW_SIZE = 50
-
-        self.window = "" 
-        self.seq_num = 0
-        self.total_packets_sent = 0
-        self.total_packets_acked = 0
-        self.dropped_packets: List[int] = []
-        self.recv_ack = 0
+        self.host = host
+        self.port = port
+        self.max_packets = max_packets
+        self.max_seq = max_seq
+        self.total_sent = 0
+        self.window_size = window_size
+        self.drop_prob = drop_prob
+        self.current_seq = 0
+        self.transmit_delay = transmit_delay
+        self.socket = None
+        self.dropped = []
         self.wrap = 0
-
-        # Performance tracking 
-        self.start_time = 0 
-        self.last_report_time = 0 
-        self.last_report_packets = 0
-
-        # Retransmission tracking 
-        self.retransmission_counts: Dict[int, int] = {} 
-        self.window_size_over_time = []
-        self.sequence_received_over_time = []
-        self.sequence_dropped_over_time = []
-        self.time_checkpoints = []
+        self.last_ack = -1
+        self.last_retransmit_time = time.time()
+        self.retransmit_interval = 5.0
+        self.retransmissions = {1: 0, 2: 0, 3: 0, 4: 0}
+        self.retransmission_counts = [0] * max_seq
         
-    def connect(self): 
-        self.socket.connect((self.server_ip, self.server_port))
-        print("Connected to server")
-        self.socket.sendall(b"network\n")
-        response = self.socket.recv(1024).decode().strip()
-        if response == "success":
-            print("Handshake successful!")
-            return True 
-        else:
-            print("Handshake failed!")
-            return False 
+        # Configure logging
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
 
+    @staticmethod
+    def get_ip_address():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # Doesn't need to be reachable
+            s.connect(('10.255.255.255', 1))
+            ip = s.getsockname()[0]
+        except Exception:
+            ip = '127.0.0.1'
+        finally:
+            s.close()
+        return ip
+    
+    def connect(self):
+        try:
+            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Optimize TCP settings
+            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1048576)  # 1MB send buffer
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1048576)  # 1MB receive buffer
+            self.socket.connect((self.host, self.port))
+            self.logger.info(f"Connected to {self.host}:{self.port}")
+
+            self.socket.send(b'network\n')  # Send handshake message
+            data = self.socket.recv(8).decode().strip()  # Receive handshake response
+            if data == 'success':
+                return True 
+
+            return False
+
+        except Exception as e:
+            self.logger.error(f"Connection failed: {e}")
+            raise
+    
     def should_drop(self):
-        return random.random() < 0.01
+        return random.random() <= self.drop_prob
+
+    def handle_transmit(self):
+        try:
+            start = self.last_ack + 1
+            block = f'{start}:'
+            
+            for i in range(self.window_size):
+                should_drop = 0 if self.should_drop() else 1
+                block += f'{should_drop}'
+
+                if should_drop == 0:
+                    self.dropped.append(start + i)
+
+            self.total_sent += self.window_size
+            self.socket.send(block.encode())
+            time.sleep(self.transmit_delay)
+
+            self.socket.settimeout(2.0)
+            try:
+                data = self.socket.recv(8).decode()
+                if not data:
+                    self.logger.warning("No data received, connection may be closed")
+                    return
+                ack = int(data)
+                self.wrap += 1 if self.last_ack > ack else 0
+                self.last_ack = ack
+
+            except socket.timeout:
+                self.logger.warning("Socket timeout, no ACK received")
+                return 
+            except ValueError as e:
+                self.logger.error(f"Invalid ACK format: {e}")
+                return 
+            finally:
+                self.socket.settimeout(None)
+
+            current_time = time.time()
+            if (current_time - self.last_retransmit_time >= self.retransmit_interval) and self.dropped:
+                self.handle_retransmit()
+                self.last_retransmit_time = current_time
+
+            # self.logger.info(f"Last Ack: {self.last_ack} - Total sent: {self.total_sent}")
+        except Exception as e:
+            self.logger.error(f"Error in transmission: {e}")
 
     def handle_retransmit(self):
-        print(f"Dropped packets: {self.dropped_packets}")
-        # Process up to 4 dropped packets
-        packets_to_process = min(self.WINDOW_SIZE, len(self.dropped_packets))
-        if packets_to_process == 0:
-            return
-            
-        retransmit_seq = self.dropped_packets[:packets_to_process]
-        self.window = "RETRANSMIT "
-        
-        # Create a new list for packets that need to be re-added
-        still_dropped = []
-        
-        for res_seq in retransmit_seq:
-            if res_seq in self.retransmission_counts:
-                self.retransmission_counts[res_seq] += 1
-            else: 
-                self.retransmission_counts[res_seq] = 1 
+        if not self.dropped:
+            self.logger.info("No packets to retransmit")
+            return 
+
+        seqs = self.dropped[:min(self.window_size, len(self.dropped))]
+        block = []
+        keep_drop = []
+        for seq in seqs:
+            normalized_seq = seq % self.max_seq
+            self.retransmission_counts[normalized_seq] += 1
+            count = min(self.retransmission_counts[normalized_seq], 4)
+            self.retransmissions[count] += 1
 
             if self.should_drop():
-                seq = "dropped"
-                still_dropped.append(res_seq)  # Re-add to dropped list
+                keep_drop.append(seq)
             else:
-                seq = res_seq
-                # Successfully transmitted
+                block.append(normalized_seq) 
+
+        self.total_sent += len(seqs)
+        self.dropped = self.dropped[len(seqs):]        
+        self.dropped.extend(keep_drop)
+
+        if block:
+            try: 
+                binary_data = struct.pack(f"!{len(block)}H", *block)
+                self.socket.send(b"R" + binary_data)
+                time.sleep(self.transmit_delay)
+                self.logger.info(f"Total sent: {self.total_sent:<8} - Retransmitting {len(block)} sequences")
+            except Exception as e:
+                self.logger.error(f"Error in retransmission: {e}")
+                self.logger.debug(f"Values causing error: {block}")
+
+
+    def run(self):
+        try:
+            if self.connect():
+                self.logger.info(f"Client IP address: {self.get_ip_address()}")
+                self.logger.info("Handshake established")
+
+                while self.total_sent < self.max_packets:
+                    self.handle_transmit()
+                    
+            else:
+                self.logger.info("Handshake failed")
+
+            self.socket.send(b"F")
+            self.logger.info("Finished")
+            self.logger.info(f"Total sent: {self.total_sent} - total missing: {len(self.dropped)} - total wrap: {self.wrap}")
+            self.logger.info(f"Retransmissions: {self.retransmissions}")
+            # self.logger.info(self.dropped)
                 
-            self.window += f"{seq} "
-        
-        # Remove the processed packets and add back any still-dropped ones
-        self.dropped_packets = self.dropped_packets[packets_to_process:] + still_dropped
-        
-        if len(self.window.split(" ")) > 1: 
-            print(f"{self.window}")
-        self.socket.sendall(self.window.encode())
-        print(f"Retransmitted {packets_to_process} packets")
-        self.window = ""
-
-    def record_checkpoint(self):
-        current_time = time.time() - self.start_time
-
-        self.time_checkpoints.append(current_time) 
-        self.window_size_over_time.append(self.WINDOW_SIZE)
-        self.sequence_received_over_time.append(self.total_packets_acked)
-        self.sequence_dropped_over_time.append(len(self.dropped_packets))
-
-    def save_performance_data(self):
-        retrans_stats = {1: 0, 2: 0, 3: 0, 4: 0}
-        for seq, count in self.retransmission_counts.items():
-            if 1 <= count <= 4:
-                retrans_stats[count] += 1 
-            else: 
-                retrans_stats[4] += 1
-
-        data = {
-            "checkpoint_times": self.time_checkpoints,
-            "window_sizes": self.window_size_over_time,
-            "sequence_received": self.sequence_received_over_time,
-            "sequence_dropped": self.sequence_dropped_over_time,
-            "retransmission_counts": [
-                retrans_stats[1],
-                retrans_stats[2],
-                retrans_stats[3],
-                retrans_stats[4]
-            ],
-            "total_sent": self.total_packets_sent,
-            "total_acked": self.total_packets_acked,
-            "total_dropped": len(self.dropped_packets)
-        }
-
-        with open("client_performance_data.json", "w") as f: 
-            json.dump(data, f)
-        print("Performance data saved")
-
-    def report_statistics(self, force=False):
-        now = time.time()
-        # Record data point for graphs
-        self.record_checkpoint()
-        
-        # Report every 10 seconds or if forced
-        if force or (now - self.last_report_time >= 10):
-            elapsed = now - self.start_time
-            packets_since_last = self.total_packets_sent - self.last_report_packets
-            rate_since_last = packets_since_last / (now - self.last_report_time) if now > self.last_report_time else 0
-            
-            print(f"Progress: {self.total_packets_sent:,}/{self.TOTAL_PACKETS:,} packets ({self.total_packets_sent/self.TOTAL_PACKETS*100:.2f}%)")
-            print(f"Current sending rate: {rate_since_last:.2f} packets/second")
-            print(f"Dropped packets: {len(self.dropped_packets):,} ({len(self.dropped_packets)/self.total_packets_sent*100:.2f}%)")
-            print(f"Wrap arounds: {self.wrap}")
-            print(f"Elapsed time: {elapsed:.2f} seconds")
-            print("-" * 50)
-            
-            self.last_report_time = now
-            self.last_report_packets = self.total_packets_sent
-
-    def send_data(self):
-        self.start_time = time.time()
-        self.last_report_time = self.start_time
-
-        while self.total_packets_sent < self.TOTAL_PACKETS:
-            self.window = ""
-
-            for _ in range(self.WINDOW_SIZE):
-                if self.total_packets_sent >= self.TOTAL_PACKETS:
-                    break 
-
-                seq = ""
-                if self.should_drop():
-                    seq = f"dropped"
-                    self.dropped_packets.append(self.seq_num)
-                else: 
-                    seq = self.seq_num
-
-                self.window += f"{seq} "
-
-                self.seq_num = (self.seq_num + 1) % self.MAX_SEQ_NUM 
-                if self.seq_num == 0:
-                    self.wrap += 1
-
-                self.total_packets_sent += 1
-
-            self.socket.sendall(self.window.encode())
-            # print(f"{self.window}")
-
-            try :
-                data = self.socket.recv(1024).decode().strip().split(" ")
-                self.recv_ack = int(data[-1])
-                self.total_packets_acked = self.total_packets_sent - len(self.dropped_packets)
-            except Exception as e: 
-                print(f"Error receiving acks: {e}")
-                break
-
-            # Handle retransmissions every 1000 packets
-            if self.total_packets_sent % 1000 == 0:
-                self.handle_retransmit()
-                # self.report_statistics()
-                print(f"Percent {self.total_packets_sent/self.TOTAL_PACKETS*100:.2f}%")
-
-            # Optional sleep to slow down sending
-            time.sleep(0.001)
-
-        # Final restransmission to clean up
-        # while self.dropped_packets:
-        #     self.handle_retransmit()
-        #
-        #     try: 
-        #         data = self.socket.recv(1024).decode().strip().split(" ")
-        #         self.total_packets_acked = self.total_packets_sent - len(self.dropped_packets)
-        #     except: 
-        #         break 
-        #
-        #     self.record_checkpoint()
-
-        # self.report_statistics(force=True)
-
-        print("\nFinal Summary:")
-        print("=" * 50)
-        print("All sequences sent successfully")
-        print(f"Total packets sent: {self.total_packets_sent:,}")
-        print(f"Dropped packets remaining: {len(self.dropped_packets):,}")
-        success_rate = (self.total_packets_sent - len(self.dropped_packets)) / self.TOTAL_PACKETS * 100
-        print(f"Success rate: {success_rate:.2f}%")
-        print(f"Total wrap arounds: {self.wrap}")
-        elapsed = time.time() - self.start_time
-        print(f"Total time: {elapsed:.2f} seconds")
-        print(f"Average sending rate: {self.total_packets_sent/elapsed:.2f} packets/second")
-
-        retrans_stats = {1: 0, 2: 0, 3: 0, 4: 0}
-        for seq, count in self.retransmission_counts.items():
-            if 1 <= count <= 4:
-                retrans_stats[count] += 1
-            else:
-                retrans_stats[4] += 1
-        print(f"Retransmission statistics: {retrans_stats}")
-        print("-" * 50)
-        for i in range(1, 5):
-            print(f"Retransmissions of {i}: {retrans_stats[i]}")
-
-        # self.save_performance_data()
-        self.socket.close()
+        except KeyboardInterrupt:
+            self.logger.info("Client stopped by user")
+        except Exception as e:
+            self.logger.error(f"Error in client operation: {e}")
+        finally:
+            self.close()
+    
+    def close(self):
+        if self.socket:
+            self.socket.close()
+            self.logger.info("Connection closed")
+            self.socket = None
 
 
-if __name__ == "__main__":
-    client = Client(SERVER_IP, SERVER_PORT)
-    if client.connect():
-        client.send_data()
+def main():
+    client = PacketClient()
+    client.run()
+
+
+if __name__ == '__main__':
+    main()
