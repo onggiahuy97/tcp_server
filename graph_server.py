@@ -19,22 +19,46 @@ def format_time_axis(ax, max_time):
     # Set tick intervals based on data range
     if max_time <= 60:  # Less than a minute
         tick_interval = 10  # Every 10 seconds
-        ticks = range(0, int(max_time) + tick_interval, tick_interval)
-        labels = [f"{t}s" for t in ticks]
     elif max_time <= 300:  # Less than 5 minutes
         tick_interval = 30  # Every 30 seconds
-        ticks = range(0, int(max_time) + tick_interval, tick_interval)
-        labels = [f"{t}s" for t in ticks]
     else:
         # For longer durations, format as minutes and seconds
         tick_interval = 60  # Every minute
-        ticks = range(0, int(max_time) + tick_interval, tick_interval)
-        labels = [f"{t//60}m {t%60}s" if t >= 60 else f"{t}s" for t in ticks]
+    
+    # Calculate enough ticks to cover the full data range
+    # Make sure we have at least one tick beyond max_time
+    max_tick = ((int(max_time) // tick_interval) + 2) * tick_interval
+    ticks = range(0, max_tick, tick_interval)
+    labels = [f"{t//60}m {t%60}s" if t >= 60 else f"{t}s" for t in ticks]
     
     ax.set_xticks(ticks)
     ax.set_xticklabels(labels)
     ax.set_xlabel('Time (seconds)', fontsize=10)
+    
+    # Ensure x-axis limits cover full data range with padding
+    ax.set_xlim(0, max_time * 1.05)
     return ax
+# def format_time_axis(ax, max_time):
+#     """Format time axis with appropriate time labels"""
+#     # Set tick intervals based on data range
+#     if max_time <= 60:  # Less than a minute
+#         tick_interval = 10  # Every 10 seconds
+#         ticks = range(0, int(max_time) + tick_interval, tick_interval)
+#         labels = [f"{t}s" for t in ticks]
+#     elif max_time <= 300:  # Less than 5 minutes
+#         tick_interval = 30  # Every 30 seconds
+#         ticks = range(0, int(max_time) + tick_interval, tick_interval)
+#         labels = [f"{t}s" for t in ticks]
+#     else:
+#         # For longer durations, format as minutes and seconds
+#         tick_interval = 60  # Every minute
+#         ticks = range(0, int(max_time) + tick_interval, tick_interval)
+#         labels = [f"{t//60}m {t%60}s" if t >= 60 else f"{t}s" for t in ticks]
+#
+#     ax.set_xticks(ticks)
+#     ax.set_xticklabels(labels)
+#     ax.set_xlabel('Time (seconds)', fontsize=10)
+#     return ax
 
 def create_stats_text(df):
     """Create statistics text from dataframe"""
